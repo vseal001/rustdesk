@@ -480,7 +480,7 @@ jobs:
         with:
           submodules: recursive
 
-       - name: Modify servers and keys
+      - name: Modify servers and keys
         shell: bash
         run: |
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
