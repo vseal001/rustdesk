@@ -97,11 +97,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
           
       - name: Restore bridge files
         uses: actions/download-artifact@master
@@ -329,11 +329,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
           
       - name: Install LLVM and Clang
         uses: rustdesk-org/install-llvm-action-32bit@master
@@ -483,11 +483,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -619,11 +619,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
 
       - name: Import the codesign cert
         if: env.MACOS_P12_BASE64 != null
@@ -925,11 +925,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -1206,11 +1206,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -1380,11 +1380,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
 
       - name: Set Swap Space
         if: ${{ matrix.job.arch == 'x86_64' }}
@@ -1720,11 +1720,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
 
       - name: Modify vcpkg.json for armv7
         if: matrix.job.vcpkg-triplet == 'arm-linux'
@@ -1932,11 +1932,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
 
       - name: Download Binary
         uses: actions/download-artifact@master
@@ -2016,11 +2016,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
 
       - name: Download Binary
         uses: actions/download-artifact@master
@@ -2088,11 +2088,11 @@ jobs:
         run: |
           # 替换 ID服务器（处理逗号分隔的列表为 Rust 数组格式）
           SERVERS=$(echo "${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}" | sed "s/,/\", \"/g")
-          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" hbb_common/src/config.rs
+          sed -i "s|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: &\[&str\] = &[\"$SERVERS\"];|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 ID服务器Key
-          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" hbb_common/src/config.rs
+          sed -i "s|pub const RS_PUB_KEY: &str = \".*\";|pub const RS_PUB_KEY: &str = \"${{ secrets.CUSTOM_RS_PUB_KEY }}\";|" ${{ github.workspace }}/libs/hbb_common/src/config.rs
           # 替换 API 服务器
-          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" rustdesk/src/common.rs
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" ${{ github.workspace }}/src/common.rs
       
       - name: Prepare env
         run: |
