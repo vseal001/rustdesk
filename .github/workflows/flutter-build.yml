@@ -2051,6 +2051,8 @@ jobs:
             --volume "${PWD}:/workspace"
           shell: /bin/bash
           install: |
+            sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
+            sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list          
             apt-get update -y
             apt-get install -y git flatpak flatpak-builder
           run: |
