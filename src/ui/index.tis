@@ -45,6 +45,7 @@ class ConnectStatus: Reactor.Component {
         } else if (connect_status == 0) {
             return translate('connecting_status');
         }
+        return translate('Ready');
         if (!handler.using_public_server()) return translate('Ready');
         return <span>{translate("Ready")}, <span .link #setup-server>{translate("setup_server_tip")}</span></span>;
     }
