@@ -102,6 +102,84 @@ jobs:
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs   
+
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"
           
       - name: Restore bridge files
         uses: actions/download-artifact@master
@@ -334,6 +412,85 @@ jobs:
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
+
+          
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"
           
       - name: Install LLVM and Clang
         uses: rustdesk-org/install-llvm-action-32bit@master
@@ -498,7 +655,86 @@ jobs:
           # 替换 API 服务器
           sed -i.bak "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
           rm -f $WORKSPACE/src/common.rs.bak 
+ 
           
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"
+
       - name: Install flutter
         uses: subosito/flutter-action@v2
         with:
@@ -637,7 +873,86 @@ jobs:
           # 替换 API 服务器
           sed -i.bak "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
           rm -f $WORKSPACE/src/common.rs.bak  
+
           
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"          
+
       - name: Import the codesign cert
         if: env.MACOS_P12_BASE64 != null
         uses: apple-actions/import-codesign-certs@v1
@@ -951,6 +1266,85 @@ jobs:
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
+          
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"
+
       - name: Install flutter
         uses: subosito/flutter-action@v2
         with:
@@ -1234,6 +1628,85 @@ jobs:
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
+          
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"
+
       - name: Install flutter
         uses: subosito/flutter-action@v2
         with:
@@ -1409,6 +1882,85 @@ jobs:
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs 
+
+          
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"
 
       - name: Set Swap Space
         if: ${{ matrix.job.arch == 'x86_64' }}
@@ -1751,6 +2303,85 @@ jobs:
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
+          
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"
+
       - name: Modify vcpkg.json for armv7
         if: matrix.job.vcpkg-triplet == 'arm-linux'
         run: |
@@ -1964,6 +2595,85 @@ jobs:
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
+          
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"
+
       - name: Download Binary
         uses: actions/download-artifact@master
         with:
@@ -2048,6 +2758,85 @@ jobs:
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
+          
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"          
+
       - name: Download Binary
         uses: actions/download-artifact@master
         with:
@@ -2096,7 +2885,7 @@ jobs:
             flatpak/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.flatpak
 
   build-rustdesk-web:
-    if: False
+    if: ${{ inputs.upload-artifact }}
     name: build-rustdesk-web
     runs-on: ubuntu-22.04
     permissions:
@@ -2121,7 +2910,86 @@ jobs:
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
-      
+
+          
+      - name: Replace package names and identifiers
+        shell: bash
+        run: |
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          echo "开始替换所有包名和标识符..."
+          
+          # ====================
+          # 1. 替换 【com.carriez.flutter_hbb】
+          # ====================
+          echo "替换 'com.carriez.flutter_hbb' ..."
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/Cargo.toml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/build.gradle
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/debug/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/profile/AndroidManifest.xml
+          sed -i "s/com\.carriez\.flutter_hbb/${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/linux/CMakeLists.txt
+          
+          # Kotlin 源文件
+          find $WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb -name "*.kt" -type f -exec sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" {} \;
+          sed -i "s/^package com\.carriez\.flutter_hbb/package ${{ secrets.NEW_FLUTTER_PACKAGE }}/g" $WORKSPACE/flutter/android/app/src/main/kotlin/ffi.kt 2>/dev/null || true
+
+          # ====================
+          # 2. 替换 【com.carriez.flutterHbb】 (PascalCase)
+          # ====================
+          echo "替换 'com.carriez.flutterHbb' ..."
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/exportOptions.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner/GoogleService-Info.plist
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/ios/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.flutterHbb/${{ secrets.NEW_BUNDLE_ID_PASCAL }}/g" $WORKSPACE/flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          # ====================
+          # 3. 替换 【com.carriez.rustdesk】
+          # ====================
+          echo "替换 'com.carriez.rustdesk' ..."
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/ios/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner/Info.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/flutter/macos/Runner.xcodeproj/project.pbxproj
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/macos.rs
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.rustdesk/${{ secrets.NEW_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 4. 替换 【com.carriez.RustDesk_server】 服务标识
+          # ====================
+          echo "替换服务标识 'com.carriez.RustDesk_server' ..."
+          sed -i "s/XPC_SERVICE_NAME = \"com\.carriez\.RustDesk_server\"/XPC_SERVICE_NAME = \"${{ secrets.NEW_SERVICE_BUNDLE_ID }}\"/g" $WORKSPACE/src/common.rs
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/agent.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/daemon.plist
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/uninstall.scpt
+          sed -i "s/com\.carriez\.RustDesk_server/${{ secrets.NEW_SERVICE_BUNDLE_ID }}/g" $WORKSPACE/src/platform/privileges_scripts/update.scpt
+
+          # ====================
+          # 5. 替换 【com.carriez.RustDesk】 (简化版本)
+          # ====================
+          echo "替换 'com.carriez.RustDesk' ..."
+          sed -i "s/com\.carriez\.RustDesk/${{ secrets.NEW_SIMPLE_NAME }}/g" $WORKSPACE/src/platform/privileges_scripts/install.scpt
+
+          # ====================
+          # 6. (可选) 移动 Android Kotlin 目录
+          # ====================
+          echo "准备重构 Android Kotlin 目录..."
+          OLD_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          # 将包名转换为路径：将点替换为斜杠
+          NEW_KOTLIN_PATH=$(echo "${{ secrets.NEW_FLUTTER_PACKAGE }}" | sed 's/\./\//g')
+          NEW_KOTLIN_DIR="$WORKSPACE/flutter/android/app/src/main/kotlin/$NEW_KOTLIN_PATH"
+          
+          if [ -d "$OLD_KOTLIN_DIR" ]; then
+            mkdir -p $(dirname "$NEW_KOTLIN_DIR")
+            mv "$OLD_KOTLIN_DIR" "$NEW_KOTLIN_DIR"
+            echo "Kotlin 目录已从 $OLD_KOTLIN_DIR 移动到 $NEW_KOTLIN_DIR"
+          else
+            echo "警告：原 Kotlin 目录不存在，跳过移动。"
+          fi
+
+          echo "所有包名和标识符替换完成！"          
+
       - name: Prepare env
         run: |
           sudo apt-get update -y
