@@ -29,6 +29,9 @@ macro_rules! my_println{
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn core_main() -> Option<Vec<String>> {
+    if !crate::common::global_init() {
+        return None;
+    }
     crate::load_custom_client();
     #[cfg(windows)]
     if !crate::platform::windows::bootstrap() {
@@ -55,6 +58,7 @@ pub fn core_main() -> Option<Vec<String>> {
                 "--file-transfer",
                 "--view-camera",
                 "--port-forward",
+                "--terminal",
                 "--rdp",
             ]
             .contains(&arg.as_str())
@@ -296,14 +300,35 @@ pub fn core_main() -> Option<Vec<String>> {
         {
             use crate::platform;
             if args[0] == "--update" {
-                let _text = match platform::update_me() {
-                    Ok(_) => {
-                        log::info!("{}", translate("Update successfully!".to_string()));
+                if args.len() > 1 && args[1].ends_with(".dmg") {
+                    // Version check is unnecessary unless downgrading to an older version
+                    // that lacks "update dmg" support. This is a special case since we cannot
+                    // detect the version before extracting the DMG, so we skip the check.
+                    let dmg_path = &args[1];
+                    println!("Updating from DMG: {}", dmg_path);
+                    match platform::update_from_dmg(dmg_path) {
+                        Ok(_) => {
+                            println!("Update process from DMG started successfully.");
+                            // The new process will handle the rest. We can exit.
+                        }
+                        Err(err) => {
+                            eprintln!("Failed to start update from DMG: {}", err);
+                        }
                     }
-                    Err(err) => {
-                        log::error!("Update failed with error: {err}");
-                    }
-                };
+                } else {
+                    println!("Starting update process...");
+                    log::info!("Starting update process...");
+                    let _text = match platform::update_me() {
+                        Ok(_) => {
+                            println!("{}", translate("Update successfully!".to_string()));
+                            log::info!("Update successfully!");
+                        }
+                        Err(err) => {
+                            eprintln!("Update failed with error: {}", err);
+                            log::error!("Update failed with error: {err}");
+                        }
+                    };
+                }
                 return None;
             }
         }
@@ -372,6 +397,10 @@ pub fn core_main() -> Option<Vec<String>> {
             }
             return None;
         } else if args[0] == "--password" {
+            if config::is_disable_settings() {
+                println!("Settings are disabled!");
+                return None;
+            }
             if args.len() == 2 {
                 if crate::platform::is_installed() && is_root() {
                     if let Err(err) = crate::ipc::set_permanent_password(args[1].to_owned()) {
@@ -402,6 +431,10 @@ pub fn core_main() -> Option<Vec<String>> {
             println!("{}", crate::ipc::get_id());
             return None;
         } else if args[0] == "--set-id" {
+            if config::is_disable_settings() {
+                println!("Settings are disabled!");
+                return None;
+            }
             if args.len() == 2 {
                 if crate::platform::is_installed() && is_root() {
                     let old_id = crate::ipc::get_id();
@@ -441,6 +474,10 @@ pub fn core_main() -> Option<Vec<String>> {
             }
             return None;
         } else if args[0] == "--option" {
+            if config::is_disable_settings() {
+                println!("Settings are disabled!");
+                return None;
+            }
             if crate::platform::is_installed() && is_root() {
                 if args.len() == 2 {
                     let options = crate::ipc::get_options();
@@ -462,51 +499,25 @@ pub fn core_main() -> Option<Vec<String>> {
                     let token = args[pos + 1].to_owned();
                     let id = crate::ipc::get_id();
                     let uuid = crate::encode64(hbb_common::get_uuid());
-                    let mut user_name = None;
-                    let pos = args.iter().position(|x| x == "--user_name").unwrap_or(max);
-                    if pos < max {
-                        user_name = Some(args[pos + 1].to_owned());
-                    }
-                    let mut strategy_name = None;
-                    let pos = args
-                        .iter()
-                        .position(|x| x == "--strategy_name")
-                        .unwrap_or(max);
-                    if pos < max {
-                        strategy_name = Some(args[pos + 1].to_owned());
-                    }
-                    let mut address_book_name = None;
-                    let pos = args
-                        .iter()
-                        .position(|x| x == "--address_book_name")
-                        .unwrap_or(max);
-                    if pos < max {
-                        address_book_name = Some(args[pos + 1].to_owned());
-                    }
-                    let mut address_book_tag = None;
-                    let pos = args
-                        .iter()
-                        .position(|x| x == "--address_book_tag")
-                        .unwrap_or(max);
-                    if pos < max {
-                        address_book_tag = Some(args[pos + 1].to_owned());
-                    }
-                    let mut address_book_alias = None;
-                    let pos = args
-                        .iter()
-                        .position(|x| x == "--address_book_alias")
-                        .unwrap_or(max);
-                    if pos < max {
-                        address_book_alias = Some(args[pos + 1].to_owned());
-                    }
-                    let mut device_group_name = None;
-                    let pos = args
-                        .iter()
-                        .position(|x| x == "--device_group_name")
-                        .unwrap_or(max);
-                    if pos < max {
-                        device_group_name = Some(args[pos + 1].to_owned());
-                    }
+                    let get_value = |c: &str| {
+                        let pos = args.iter().position(|x| x == c).unwrap_or(max);
+                        if pos < max {
+                            Some(args[pos + 1].to_owned())
+                        } else {
+                            None
+                        }
+                    };
+                    let user_name = get_value("--user_name");
+                    let strategy_name = get_value("--strategy_name");
+                    let address_book_name = get_value("--address_book_name");
+                    let address_book_tag = get_value("--address_book_tag");
+                    let address_book_alias = get_value("--address_book_alias");
+                    let address_book_password = get_value("--address_book_password");
+                    let address_book_note = get_value("--address_book_note");
+                    let device_group_name = get_value("--device_group_name");
+                    let note = get_value("--note");
+                    let device_username = get_value("--device_username");
+                    let device_name = get_value("--device_name");
                     let mut body = serde_json::json!({
                         "id": id,
                         "uuid": uuid,
@@ -516,9 +527,19 @@ pub fn core_main() -> Option<Vec<String>> {
                         && strategy_name.is_none()
                         && address_book_name.is_none()
                         && device_group_name.is_none()
+                        && note.is_none()
+                        && device_username.is_none()
+                        && device_name.is_none()
                     {
                         println!(
-                            "--user_name or --strategy_name or --address_book_name or --device_group_name is required!"
+                            r#"At least one of the following options is required:
+  --user_name
+  --strategy_name
+  --address_book_name
+  --device_group_name
+  --note
+  --device_username
+  --device_name"#
                         );
                     } else {
                         if let Some(name) = user_name {
@@ -535,9 +556,24 @@ pub fn core_main() -> Option<Vec<String>> {
                             if let Some(name) = address_book_alias {
                                 body["address_book_alias"] = serde_json::json!(name);
                             }
+                            if let Some(name) = address_book_password {
+                                body["address_book_password"] = serde_json::json!(name);
+                            }
+                            if let Some(name) = address_book_note {
+                                body["address_book_note"] = serde_json::json!(name);
+                            }
                         }
                         if let Some(name) = device_group_name {
                             body["device_group_name"] = serde_json::json!(name);
+                        }
+                        if let Some(name) = note {
+                            body["note"] = serde_json::json!(name);
+                        }
+                        if let Some(name) = device_username {
+                            body["device_username"] = serde_json::json!(name);
+                        }
+                        if let Some(name) = device_name {
+                            body["device_name"] = serde_json::json!(name);
                         }
                         let url = crate::ui_interface::get_api_server() + "/api/devices/cli";
                         match crate::post_request_sync(url, body.to_string(), &header) {
@@ -575,7 +611,7 @@ pub fn core_main() -> Option<Vec<String>> {
             }
             return None;
         } else if args[0] == "--whiteboard" {
-            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
                 crate::whiteboard::run();
             }
@@ -669,7 +705,7 @@ fn core_main_invoke_new_connection(mut args: std::env::Args) -> Option<Vec<Strin
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--connect" | "--play" | "--file-transfer" | "--view-camera" | "--port-forward"
-            | "--rdp" => {
+            | "--terminal" | "--rdp" => {
                 authority = Some((&arg.to_string()[2..]).to_owned());
                 id = args.next();
             }

@@ -1976,10 +1976,21 @@ impl LoginConfigHandler {
     ///
     /// # Arguments
     ///
-    /// * `value` - The view style to be saved.
+    /// * `value` - The scroll style to be saved.
     pub fn save_scroll_style(&mut self, value: String) {
         let mut config = self.load_config();
         config.scroll_style = value;
+        self.save_config(config);
+    }
+
+    /// Save edge scroll edge thickness to the current config.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The edge thickness to be saved.
+    pub fn save_edge_scroll_edge_thickness(&mut self, value: i32) {
+        let mut config = self.load_config();
+        config.edge_scroll_edge_thickness = value;
         self.save_config(config);
     }
 
@@ -2027,7 +2038,7 @@ impl LoginConfigHandler {
     ///
     // It's Ok to check the option empty in this function.
     // `toggle_option()` is only called in a session.
-    // Custom client advanced settings will not affact this function.
+    // Custom client advanced settings will not effect this function.
     pub fn toggle_option(&mut self, name: String) -> Option<Message> {
         let mut option = OptionMessage::default();
         let mut config = self.load_config();
@@ -2302,7 +2313,7 @@ impl LoginConfigHandler {
     ///
     // It's Ok to check the option empty in this function.
     // `get_toggle_option()` is only called in a session.
-    // Custom client advanced settings will not affact this function.
+    // Custom client advanced settings will not effect this function.
     pub fn get_toggle_option(&self, name: &str) -> bool {
         if name == "show-remote-cursor" {
             self.config.show_remote_cursor.v
@@ -3829,7 +3840,11 @@ pub fn check_if_retry(msgtype: &str, title: &str, text: &str, retry_for_relay: b
         && ((text.contains("10054") || text.contains("104")) && retry_for_relay
             || (!text.to_lowercase().contains("offline")
                 && !text.to_lowercase().contains("not exist")
-                && !text.to_lowercase().contains("handshake")
+                && (!text.to_lowercase().contains("handshake")
+                    // https://github.com/snapview/tungstenite-rs/blob/e7e060a89a72cb08e31c25a6c7284dc1bd982e23/src/error.rs#L248
+                    || text
+                        .to_lowercase()
+                        .contains("connection reset without closing handshake") && use_ws())
                 && !text.to_lowercase().contains("failed")
                 && !text.to_lowercase().contains("resolve")
                 && !text.to_lowercase().contains("mismatch")
