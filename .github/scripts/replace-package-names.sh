@@ -24,10 +24,6 @@ log_error() {
     exit 1
 }
 
-log_debug() {
-    echo -e "${BLUE}[DEBUG]${NC} $1"
-}
-
 # 检测操作系统并设置相应工具
 detect_os_and_setup() {
     log_info "检测操作系统..."
@@ -81,30 +77,76 @@ safe_replace() {
         return 1
     fi
     
+    log_info "处理文件: $file"
+    
     # 备份原始文件
     local backup_file="${file}.bak"
+    
     if [[ "$NEED_CLEANUP" == "true" ]]; then
         # macOS 方式：使用 sed -i.bak
         $SED_CMD "s|$pattern|$replacement|g" "$file"
+        # 清理备份文件
+        [[ -f "$backup_file" ]] && rm -f "$backup_file"
     else
         # 其他系统：先备份再替换
-        cp "$file" "$backup_file" 2>/dev/null || {
-            log_warn "无法创建备份: $file"
+        if cp "$file" "$backup_file" 2>/dev/null; then
+            $SED_CMD "s|$pattern|$replacement|g" "$file" || {
+                log_warn "替换失败，恢复备份: $file"
+                mv "$backup_file" "$file"
+                return 1
+            }
+            # 删除备份
+            rm -f "$backup_file"
+        else
+            log_warn "无法创建备份，直接替换: $file"
             $SED_CMD "s|$pattern|$replacement|g" "$file"
-            return $?
-        }
-        
-        $SED_CMD "s|$pattern|$replacement|g" "$file" || {
-            log_warn "替换失败，恢复备份: $file"
-            mv "$backup_file" "$file"
-            return 1
-        }
-        
-        # 删除备份
-        rm -f "$backup_file"
+        fi
     fi
     
     return 0
+}
+
+# 特殊处理 ffi.kt 文件
+replace_ffi_kt() {
+    local workspace="$1"
+    local new_package="$2"
+    
+    local ffi_kt_file="$workspace/flutter/android/app/src/main/kotlin/ffi.kt"
+    
+    if [[ ! -f "$ffi_kt_file" ]]; then
+        # 尝试在旧位置查找
+        ffi_kt_file="$workspace/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/ffi.kt"
+    fi
+    
+    if [[ ! -f "$ffi_kt_file" ]]; then
+        # 尝试在新位置查找
+        local new_kotlin_path=$(echo "$new_package" | tr '.' '/')
+        ffi_kt_file="$workspace/flutter/android/app/src/main/kotlin/$new_kotlin_path/ffi.kt"
+    fi
+    
+    if [[ -f "$ffi_kt_file" ]]; then
+        log_info "处理 ffi.kt 文件: $ffi_kt_file"
+        
+        # 替换包名声明
+        safe_replace "$ffi_kt_file" "^package com\\.carriez\\.flutter_hbb" "package $new_package" || true
+        
+        # 替换 import 语句中的包名
+        safe_replace "$ffi_kt_file" "import com\\.carriez\\.flutter_hbb\\.RdClipboardManager" "import $new_package.RdClipboardManager" || true
+        safe_replace "$ffi_kt_file" "import com\\.carriez\\.flutter_hbb\\." "import $new_package." || true
+        
+        # 替换类引用
+        safe_replace "$ffi_kt_file" "com\\.carriez\\.flutter_hbb" "$new_package" || true
+        
+        # 检查替换结果
+        log_info "ffi.kt 替换后检查:"
+        grep -n "package\|import\|carriez" "$ffi_kt_file" | head -10 || true
+    else
+        log_warn "未找到 ffi.kt 文件"
+        # 尝试查找所有可能的 ffi.kt 文件
+        find "$workspace/flutter/android/app/src/main/kotlin" -name "ffi.kt" -type f 2>/dev/null | while read -r found_file; do
+            log_info "找到 ffi.kt 文件: $found_file"
+        done
+    fi
 }
 
 # 替换包名和标识符
@@ -139,18 +181,20 @@ replace_package_names() {
         safe_replace "$file" "com\\.carriez\\.flutter_hbb" "$new_package" || true
     done
     
-    # Kotlin 源文件
+    # 特殊处理 ffi.kt 文件
+    replace_ffi_kt "$workspace" "$new_package"
+    
+    # Kotlin 源文件 - 使用 find 命令
     local kotlin_dir="flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
     if [[ -d "$kotlin_dir" ]]; then
-        log_info "处理 Kotlin 文件..."
+        log_info "处理 Kotlin 目录: $kotlin_dir"
         find "$kotlin_dir" -name "*.kt" -type f | while read -r ktfile; do
+            log_info "  处理: $ktfile"
+            # 替换包声明
             safe_replace "$ktfile" "^package com\\.carriez\\.flutter_hbb" "package $new_package" || true
+            # 替换所有出现的旧包名
+            safe_replace "$ktfile" "com\\.carriez\\.flutter_hbb" "$new_package" || true
         done
-    fi
-    
-    # ffi.kt 文件
-    if [[ -f "flutter/android/app/src/main/kotlin/ffi.kt" ]]; then
-        safe_replace "flutter/android/app/src/main/kotlin/ffi.kt" "^package com\\.carriez\\.flutter_hbb" "package $new_package" || true
     fi
     
     # 2. 替换 com.carriez.flutterHbb (PascalCase)
@@ -188,9 +232,7 @@ replace_package_names() {
     log_info "替换服务标识 'com.carriez.RustDesk_server' ..."
     
     # 特殊处理 XPC_SERVICE_NAME
-    if [[ -f "src/common.rs" ]]; then
-        safe_replace "src/common.rs" "XPC_SERVICE_NAME = \"com\\.carriez\\.RustDesk_server\"" "XPC_SERVICE_NAME = \"$new_service_bundle_id\"" || true
-    fi
+    safe_replace "src/common.rs" "XPC_SERVICE_NAME = \"com\\.carriez\\.RustDesk_server\"" "XPC_SERVICE_NAME = \"$new_service_bundle_id\"" || true
     
     files_to_replace=(
         "src/platform/privileges_scripts/agent.plist"
@@ -239,11 +281,77 @@ replace_package_names() {
         fi
         
         log_info "Kotlin 目录移动完成"
+        
+        # 检查新目录中的文件
+        log_info "新目录内容:"
+        find "$new_kotlin_dir" -name "*.kt" -type f | head -5 | while read file; do
+            log_info "  - $file"
+            # 检查包名是否正确
+            if grep -q "^package $new_package" "$file"; then
+                log_info "    ✓ 包名正确"
+            else
+                log_warn "    ⚠ 包名可能需要更新"
+                head -5 "$file" | grep -i "package\|import" || true
+            fi
+        done
     else
         log_warn "原 Kotlin 目录不存在，跳过移动"
+        log_info "当前 kotlin 目录内容:"
+        ls -la "flutter/android/app/src/main/kotlin/" 2>/dev/null || true
     fi
     
     log_info "包名和标识符替换完成！"
+}
+
+# 验证替换结果
+verify_replacements() {
+    local workspace="$1"
+    local new_package="$2"
+    
+    log_info "=== 验证替换结果 ==="
+    
+    cd "$workspace" || return
+    
+    # 检查是否有未替换的旧包名
+    log_info "1. 检查未替换的旧包名..."
+    
+    # 检查 Kotlin 文件
+    find "flutter/android/app/src/main/kotlin" -name "*.kt" -type f 2>/dev/null | while read -r ktfile; do
+        if grep -q "com\\.carriez\\.flutter_hbb" "$ktfile"; then
+            log_warn "文件 $ktfile 包含未替换的旧包名:"
+            grep -n "com\\.carriez\\.flutter_hbb" "$ktfile" | head -3
+        fi
+    done
+    
+    # 检查 ffi.kt 文件
+    local ffi_kt_files=(
+        "flutter/android/app/src/main/kotlin/ffi.kt"
+        "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/ffi.kt"
+    )
+    
+    local new_kotlin_path=$(echo "$new_package" | tr '.' '/')
+    ffi_kt_files+=("flutter/android/app/src/main/kotlin/$new_kotlin_path/ffi.kt")
+    
+    for ffi_file in "${ffi_kt_files[@]}"; do
+        if [[ -f "$ffi_file" ]]; then
+            log_info "检查 ffi.kt: $ffi_file"
+            if grep -q "com\\.carriez\\.flutter_hbb" "$ffi_file"; then
+                log_warn "  ⚠ 包含未替换的旧包名"
+                grep -n "com\\.carriez\\.flutter_hbb" "$ffi_file"
+            else
+                log_info "  ✓ 已正确替换"
+            fi
+            break
+        fi
+    done
+    
+    log_info "2. 检查 RdClipboardManager 引用..."
+    find "flutter/android/app/src/main/kotlin" -name "*.kt" -type f 2>/dev/null -exec grep -l "RdClipboardManager" {} \; | while read -r file; do
+        log_info "  在文件中找到 RdClipboardManager: $file"
+        grep -n "RdClipboardManager" "$file" | head -2
+    done
+    
+    log_info "验证完成"
 }
 
 # 主函数
@@ -269,10 +377,7 @@ main() {
     replace_package_names "$workspace" "$new_package" "$new_bundle_id" "$new_bundle_id_pascal" "$new_service_bundle_id" "$new_simple_name"
     
     # 验证替换结果
-    log_info "验证替换结果:"
-    echo "========================================"
-    grep -r "com.carriez" . 2>/dev/null | grep -v ".bak$" | grep -v ".git/" | head -20 || true
-    echo "========================================"
+    verify_replacements "$workspace" "$new_package"
     
     log_info "脚本执行完成！"
 }
