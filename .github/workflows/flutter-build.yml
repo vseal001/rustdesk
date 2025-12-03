@@ -103,23 +103,22 @@ jobs:
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs   
 
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"  
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
           
       - name: Restore bridge files
         uses: actions/download-artifact@master
@@ -354,23 +353,22 @@ jobs:
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
 
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"  
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
           
       - name: Install LLVM and Clang
         uses: rustdesk-org/install-llvm-action-32bit@master
@@ -537,23 +535,22 @@ jobs:
           rm -f $WORKSPACE/src/common.rs.bak 
  
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"  
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -695,23 +692,22 @@ jobs:
           rm -f $WORKSPACE/src/common.rs.bak  
 
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"  
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
 
       - name: Import the codesign cert
         if: env.MACOS_P12_BASE64 != null
@@ -1027,23 +1023,22 @@ jobs:
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"  
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -1329,23 +1324,22 @@ jobs:
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"  
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -1524,23 +1518,22 @@ jobs:
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs 
 
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"  
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
 
       - name: Set Swap Space
         if: ${{ matrix.job.arch == 'x86_64' }}
@@ -1884,23 +1877,22 @@ jobs:
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"  
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"   
 
       - name: Modify vcpkg.json for armv7
         if: matrix.job.vcpkg-triplet == 'arm-linux'
@@ -2116,23 +2108,23 @@ jobs:
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"  
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"   
+
       - name: Download Binary
         uses: actions/download-artifact@master
         with:
@@ -2218,23 +2210,22 @@ jobs:
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"   
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
 
       - name: Download Binary
         uses: actions/download-artifact@master
@@ -2284,7 +2275,7 @@ jobs:
             flatpak/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.flatpak
 
   build-rustdesk-web:
-    if: ${{ inputs.upload-artifact }}
+    if: false
     name: build-rustdesk-web
     runs-on: ubuntu-22.04
     permissions:
@@ -2311,23 +2302,22 @@ jobs:
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
           
-      - name: Replace package names and identifiers
+      - name: Replace package names and identifiers (using script)
         shell: bash
         env:
-          NEW_FLUTTER_PACKAGE: ${{ secrets.NEW_FLUTTER_PACKAGE }}
-          NEW_BUNDLE_ID: ${{ secrets.NEW_BUNDLE_ID }}
-          NEW_BUNDLE_ID_PASCAL: ${{ secrets.NEW_BUNDLE_ID_PASCAL }}
-          NEW_SERVICE_BUNDLE_ID: ${{ secrets.NEW_SERVICE_BUNDLE_ID }}
-          NEW_SIMPLE_NAME: ${{ secrets.NEW_SIMPLE_NAME }}
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
         run: |
+          # 确保脚本有执行权限
           chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
           ./.github/scripts/replace-package-names.sh \
             "${{ github.workspace }}" \
-            "$NEW_FLUTTER_PACKAGE" \
-            "$NEW_BUNDLE_ID" \
-            "$NEW_BUNDLE_ID_PASCAL" \
-            "$NEW_SERVICE_BUNDLE_ID" \
-            "$NEW_SIMPLE_NAME"       
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"       
 
       - name: Prepare env
         run: |
