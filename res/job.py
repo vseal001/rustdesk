@@ -150,6 +150,10 @@ def sign(file_path):
 
 
 def sign_one_file(file_path):
+        # 新增：如果设置了 SKIP_SIGN 环境变量为 1，则跳过签名
+    if os.getenv('SKIP_SIGN') == '1':
+        logging.info(f"Skipping signature for {file_path} (SKIP_SIGN=1)")
+        return True
     logging.info(f"Signing {file_path}")
     res = create("sign", file_path)
     logging.info(f"Uploaded {file_path}")
