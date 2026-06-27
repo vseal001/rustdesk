@@ -10,8 +10,10 @@
 #   6. 更新 VERSION，写回 latest-synced-tag，commit + push。
 #   7. 成功完成 -> 发 ntfy 通知(info)。
 #
-# 需要权限：Settings -> Actions -> General -> Workflow permissions -> Read and write。
-# 需要 Secrets：NTFY_URL、NTFY_TOKEN、GITHUB_TOKEN(自动)。
+# 需要 Secrets：
+#   BOT_TOKEN    = 你的 fine-grained PAT（Contents R/W + Workflows R/W，用于 push 含 workflow 改动的提交）
+#   NTFY_URL、NTFY_TOKEN
+# GITHUB_TOKEN 仅用于读取上游/fork 仓库信息（自动提供，无需配置）。
 name: Sync Upstream Release
 
 on:
@@ -25,7 +27,6 @@ on:
         default: "latest"
 
 permissions:
-  actions: write
   contents: write
   pull-requests: write
 
@@ -47,7 +48,9 @@ jobs:
           ref: master
           fetch-depth: 0
           submodules: false
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # 用 BOT_TOKEN(PAT) 而非默认 GITHUB_TOKEN：PAT 有 workflows 写权限，
+          # 可 push 含 .github/workflows/ 改动的提交（GITHUB_TOKEN 受限无法 push workflow 文件）
+          token: ${{ secrets.BOT_TOKEN }}
 
       - name: Resolve target upstream tag
         id: resolve
@@ -116,7 +119,8 @@ jobs:
         if: steps.idem.outputs.skip != 'true'
         env:
           TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gh pr create 需对本仓库操作，用 BOT_TOKEN(PAT)
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
           set -uo pipefail
           # 第一步：尝试普通合并
@@ -217,6 +221,8 @@ jobs:
         run: |
           set -uo pipefail
           # 检测上游 tag 对 .github/workflows/ 的改动（merge 自动提交 HEAD，merge 前 HEAD~1）
+          # 用于发 ntfy 提醒：用 BOT_TOKEN(PAT) 可自动 push workflow 改动，
+          # 但仍提醒你核对注入点是否完好（你的自定义块 fork 独有，通常不冲突）
           WF_CHANGED=$(git diff --name-only HEAD~1 HEAD -- .github/workflows/ 2>/dev/null || echo "")
           if [[ -n "${WF_CHANGED}" ]]; then
             echo "⚠️ 上游 ${TARGET_TAG} 改动了 workflow 文件:"
@@ -225,23 +231,6 @@ jobs:
           else
             echo "上游 ${TARGET_TAG} 未改动 workflow 文件"
             echo "wf_changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Exclude upstream workflow changes
-        if: steps.idem.outputs.skip != 'true'
-        run: |
-          set -euo pipefail
-          # 撤销 merge 带入的 workflow 文件改动，保留你的注入点和自定义 sed。
-          # 必须在 Bump VERSION 之前：先把 workflow 恢复到 merge 前(HEAD~1)，
-          # 再由后续 Bump VERSION 重新写入新版本号。
-          # 原因：GitHub YAML 不支持声明 workflows 权限 scope，默认 GITHUB_TOKEN
-          # 无法 push .github/workflows/ 文件；排除后绕过此限制，且你的
-          # replace-update-source.sh 注入点(11处)和 RENDEZVOUS/RS_PUB_KEY sed 100%保留。
-          if git diff --name-only HEAD~1 HEAD -- .github/workflows/ | grep -q .; then
-            git checkout HEAD~1 -- .github/workflows/
-            echo "已撤销上游 workflow 改动（保留你的注入点与自定义 sed）"
-          else
-            echo "上游未改动 workflow，无需撤销"
           fi
 
       - name: Bump VERSION fields
@@ -263,8 +252,10 @@ jobs:
           set -euo pipefail
           git add -A
           git commit -m "sync: merge upstream ${TARGET_TAG} + bump VERSION + re-point hbb_common"
+          # push 凭证来自 checkout 的 BOT_TOKEN(PAT)，有 workflows 写权限，
+          # 可 push 含 .github/workflows/ 改动的提交
           git push origin master
-          echo "✅ 已 push（workflow 改动已排除，无需 workflows 权限）"
+          echo "✅ 已 push（用 BOT_TOKEN，含上游 workflow 改动）"
 
       # --- 通知 ---
       - name: Notify on merge conflict
@@ -312,5 +303,5 @@ jobs:
         run: |
           chmod +x .github/scripts/notify.sh
           ./.github/scripts/notify.sh warning "rustdesk 上游改了 workflow" \
-            "上游 ${TARGET_TAG} 改动了 .github/workflows/ 文件，本次已排除（你的注入点已保留）。如需引入上游 workflow 新逻辑，请手动对比 rustdesk/rustdesk 的该 tag 改动后合并到你的 flutter-build.yml。" \
+            "上游 ${TARGET_TAG} 改动了 .github/workflows/ 文件，已用 BOT_TOKEN 自动合并。请抽查 flutter-build.yml：确认你的 11 处 replace-update-source.sh 注入点和 RENDEZVOUS/RS_PUB_KEY sed 仍存在（这些块 fork 独有，正常不冲突）。" \
             "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
