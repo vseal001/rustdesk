@@ -208,6 +208,40 @@ jobs:
           git update-index --cacheinfo 160000 "${HBB_COMMIT}" libs/hbb_common
           echo "✅ hbb_common url -> fork, 指针 -> ${HBB_COMMIT:0:12}"
 
+      - name: Detect upstream workflow changes
+        id: wfdiff
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          set -uo pipefail
+          # 检测上游 tag 对 .github/workflows/ 的改动（merge 自动提交 HEAD，merge 前 HEAD~1）
+          WF_CHANGED=$(git diff --name-only HEAD~1 HEAD -- .github/workflows/ 2>/dev/null || echo "")
+          if [[ -n "${WF_CHANGED}" ]]; then
+            echo "⚠️ 上游 ${TARGET_TAG} 改动了 workflow 文件:"
+            echo "${WF_CHANGED}"
+            echo "wf_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "上游 ${TARGET_TAG} 未改动 workflow 文件"
+            echo "wf_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Exclude upstream workflow changes
+        if: steps.idem.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          # 关键：撤销 merge 带入的 workflow 文件改动，保留你的注入点和自定义 sed。
+          # 必须在 Bump VERSION 之前执行：先把 workflow 恢复到 merge 前(HEAD~1)，
+          # 再由后续 Bump VERSION step 重新写入新版本号。
+          # 这样上游对 .github/workflows/*.yml 的改动不进入本次提交，
+          # 你的 replace-update-source.sh 注入点和 RENDEZVOUS/RS_PUB_KEY sed 100% 保留。
+          if git diff --name-only HEAD~1 HEAD -- .github/workflows/ | grep -q .; then
+            git checkout HEAD~1 -- .github/workflows/
+            echo "已撤销上游 workflow 改动（保留你的注入点与自定义 sed）"
+          else
+            echo "上游未改动 workflow，无需撤销"
+          fi
+
       - name: Bump VERSION fields
         if: steps.idem.outputs.skip != 'true'
         env:
@@ -228,7 +262,7 @@ jobs:
           git add -A
           git commit -m "sync: merge upstream ${TARGET_TAG} + bump VERSION + re-point hbb_common"
           git push origin master
-          echo "✅ 已 push"
+          echo "✅ 已 push（workflow 改动已排除，由你手动决定是否合并）"
 
       # --- 通知 ---
       - name: Notify on merge conflict
@@ -267,4 +301,14 @@ jobs:
           chmod +x .github/scripts/notify.sh
           ./.github/scripts/notify.sh info "rustdesk 同步完成" \
             "已合并上游 ${TARGET_TAG} 并更新 VERSION，build-and-publish 即将自动构建。" \
+            "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
+
+      - name: Notify on upstream workflow changes
+        if: success() && steps.wfdiff.outputs.wf_changed == 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          chmod +x .github/scripts/notify.sh
+          ./.github/scripts/notify.sh warning "rustdesk 上游改了 workflow" \
+            "上游 ${TARGET_TAG} 改动了 .github/workflows/ 文件，本次已自动排除（保留你的注入点）。请手动对比上游 workflow 改动，决定是否需要把新逻辑合并到你的 flutter-build.yml。" \
             "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
