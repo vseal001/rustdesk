@@ -25,6 +25,7 @@ on:
         default: "latest"
 
 permissions:
+  workflows: write
   contents: write
   pull-requests: write
 
