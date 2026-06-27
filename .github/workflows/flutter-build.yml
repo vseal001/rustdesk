@@ -2179,6 +2179,10 @@ jobs:
           sudo apt-get update -y
           # https://github.com/AppImage/AppImageKit/wiki/FUSE
           sudo apt-get install -y libarchive-tools libfuse2
+          # pin setuptools_scm 到兼容版本：appimage-builder 的 setup.py 依赖
+          # ignore_egg_info_in_manifest 属性，该属性在 setuptools_scm>=9 被移除，
+          # 导致 egg_info 阶段 AttributeError。先降级再装 appimage-builder。
+          sudo pip3 install "setuptools_scm==7.1.0"
           # set-up appimage-builder
           # https://github.com/AppImage/AppImageKit/issues/1395
           sudo pip3 install git+https://github.com/rustdesk-org/appimage-builder.git
