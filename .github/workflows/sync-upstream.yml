@@ -1,0 +1,270 @@
+# 自动同步源站（rustdesk/rustdesk）正式版 release 到本仓库（vseal001/rustdesk）。
+#
+# 工作内容：
+#   1. 每天（或手动）查询源站最新正式版 release 标签。
+#   2. 与本仓库 .github/latest-synced-tag 幂等判断，已是最新则跳过。
+#   3. git merge 上游 tag。若合并冲突 -> 停止并发 ntfy 通知(warning)。
+#   4. 解析 tag 锁定的 hbb_common commit，校验 fork 是否包含该 commit。
+#      若 fork 滞后不含该 commit -> 停止并发通知(warning)，提示手动 sync fork。
+#   5. 把 hbb_common 子模块 url 改回 fork，指针切到该 commit。
+#   6. 更新 VERSION，写回 latest-synced-tag，commit + push。
+#   7. 成功完成 -> 发 ntfy 通知(info)。
+#
+# 需要权限：Settings -> Actions -> General -> Workflow permissions -> Read and write。
+# 需要 Secrets：NTFY_URL、NTFY_TOKEN、GITHUB_TOKEN(自动)。
+name: Sync Upstream Release
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "指定源站标签（如 1.4.8）；填 latest 或留空则自动取最新正式版"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: "rustdesk/rustdesk"
+  HBB_COMMON_FORK_URL: "https://github.com/vseal001/hbb_common"
+  GITEA_RELEASE_BASE: "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/releases"
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    env:
+      NTFY_URL: ${{ secrets.NTFY_URL }}
+      NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          submodules: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve target upstream tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          # 输入 latest 或留空 -> 取最新正式版；否则用指定 tag
+          if [[ -n "${INPUT_TAG}" && "${INPUT_TAG}" != "latest" ]]; then
+            TAG="${INPUT_TAG}"
+          else
+            TAG=$(gh release list \
+              --repo "${UPSTREAM_REPO}" \
+              --limit 30 \
+              --json tagName,isPrerelease \
+              --jq '[.[] | select(.isPrerelease == false) | select(.tagName != "nightly")] | .[0].tagName')
+          fi
+          if [[ -z "${TAG}" ]]; then
+            echo "::error::未能解析到源站正式版标签"
+            exit 1
+          fi
+          if [[ ! "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$ ]]; then
+            echo "::error::标签 ${TAG} 不是正式版本号格式，已跳过"
+            exit 1
+          fi
+          echo "target_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "目标源站标签: ${TAG}"
+
+      - name: Idempotency check
+        id: idem
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          LAST=""
+          if [[ -f .github/latest-synced-tag ]]; then
+            LAST=$(tr -d '[:space:]' < .github/latest-synced-tag)
+          fi
+          echo "上次同步: '${LAST}'，目标: '${TARGET_TAG}'"
+          if [[ "${LAST}" == "${TARGET_TAG}" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "已是最新，跳过。"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git identity
+        if: steps.idem.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # --- 合并：冲突则失败 ---
+      - name: Fetch upstream tag
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "refs/tags/${TARGET_TAG}:refs/tags/${TARGET_TAG}" --no-tags
+          echo "已拉取 tag ${TARGET_TAG}"
+
+      - name: Merge upstream tag
+        id: merge
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          # 第一步：尝试普通合并
+          if git merge --no-edit "${TARGET_TAG}"; then
+            echo "merge_rc=0" >> "$GITHUB_OUTPUT"
+            echo "✅ 合并 ${TARGET_TAG} 成功"
+            exit 0
+          fi
+
+          # 合并冲突：中止当前合并，改为创建冲突解决 PR
+          echo "⚠️ 合并 ${TARGET_TAG} 存在冲突，准备创建冲突解决 PR..."
+          git merge --abort
+
+          # 创建临时分支，在其上保留冲突标记的合并状态
+          BRANCH="sync/conflict-${TARGET_TAG}"
+          # 删除可能存在的同名旧分支（远程）
+          git push origin --delete "${BRANCH}" 2>/dev/null || true
+          git checkout -b "${BRANCH}"
+          # 重新触发合并但不提交，保留冲突标记（<<<< ==== >>>>）
+          git merge --no-commit --no-ff "${TARGET_TAG}" || true
+
+          # 提交冲突标记状态（GitHub PR 的 Web 冲突解决器需要可提交状态）
+          # 用占位提交，PR 页面会显示冲突文件供在线解决
+          git add -A || true
+          git commit -m "sync: merge upstream ${TARGET_TAG} (CONFLICT - needs manual resolve)" --no-verify || true
+          git push origin "${BRANCH}"
+
+          # 创建 PR，body 说明冲突，指向上游 tag
+          PR_URL=$(gh pr create \
+            --base master \
+            --head "${BRANCH}" \
+            --title "sync: 合并上游 ${TARGET_TAG}（含冲突待解决）" \
+            --body "$(cat <<EOF
+          ## 合并冲突 - 需人工解决
+
+          上游标签 **${TARGET_TAG}** 的合并存在冲突，已自动生成本 PR。
+
+          **请在 GitHub 的冲突解决界面处理冲突**（本页面 Files changed 区域提供交互式合并工具）：
+          1. 解决所有冲突文件（\`<<<<\` \`====\` \`>>>>\` 标记处）
+          2. 完成后合并本 PR
+          3. 合并后 \`build-and-publish.yml\` 会自动触发构建
+
+          > 注：源文件 lib.rs/common.rs 因采用构建时注入方案，通常不会冲突；
+          > 冲突多发生在自定义文件（manifest、VERSION 行等）与上游重构重叠时。
+          EOF
+          )" 2>&1 | tail -1) || PR_URL=""
+
+          echo "conflict_pr_url=${PR_URL}" >> "$GITHUB_OUTPUT"
+          echo "merge_rc=1" >> "$GITHUB_OUTPUT"
+          echo "::error::合并 ${TARGET_TAG} 冲突，已创建 PR: ${PR_URL}"
+          exit 1
+
+      # --- fork 版本校验：不含所需 commit 则停止 ---
+      - name: Verify hbb_common fork contains required commit
+        id: hbb
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 解析该上游 tag 锁定的 hbb_common commit
+          HBB_COMMIT=$(git ls-tree "${TARGET_TAG}" libs/hbb_common | awk '{print $3}')
+          if [[ -z "${HBB_COMMIT}" ]]; then
+            echo "::error::无法从 tag ${TARGET_TAG} 解析 hbb_common 指针"
+            exit 1
+          fi
+          echo "tag ${TARGET_TAG} 锁定的 hbb_common commit: ${HBB_COMMIT}"
+          echo "hbb_commit=${HBB_COMMIT}" >> "$GITHUB_OUTPUT"
+
+          # 校验 fork 是否包含该 commit（fork 是上游 mirror，正常应包含）
+          CODE=$(gh api "repos/vseal001/hbb_common/commits/${HBB_COMMIT}" \
+            --jq '.sha' 2>/dev/null && echo OK || echo "")
+          if [[ -z "${CODE}" ]]; then
+            echo "::error::fork (vseal001/hbb_common) 不含 commit ${HBB_COMMIT:0:12}，需手动 sync fork 后重试"
+            exit 1
+          fi
+          echo "✅ fork 包含所需 commit ${HBB_COMMIT:0:12}"
+
+      - name: Re-point hbb_common submodule to fork
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          HBB_COMMIT: ${{ steps.hbb.outputs.hbb_commit }}
+        run: |
+          set -euo pipefail
+          # 把 .gitmodules url 改回 fork
+          perl -i -pe 's|url = https://github\.com/rustdesk/hbb_common|url = '"${HBB_COMMON_FORK_URL}"'|' .gitmodules
+          git config submodule."libs/hbb_common".url "${HBB_COMMON_FORK_URL}"
+          # 指针切到 fork 上对应 commit
+          git update-index --cacheinfo 160000 "${HBB_COMMIT}" libs/hbb_common
+          echo "✅ hbb_common url -> fork, 指针 -> ${HBB_COMMIT:0:12}"
+
+      - name: Bump VERSION fields
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          sed -i -E 's|^  VERSION: ".*"|  VERSION: "'"${TARGET_TAG}"'"|' .github/workflows/flutter-build.yml
+          sed -i -E 's|^version = ".*"|version = "'"${TARGET_TAG}"'"|' Cargo.toml
+          printf '%s' "${TARGET_TAG}" > .github/latest-synced-tag
+          echo "VERSION -> ${TARGET_TAG}"
+
+      - name: Commit and push
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          git add -A
+          git commit -m "sync: merge upstream ${TARGET_TAG} + bump VERSION + re-point hbb_common"
+          git push origin master
+          echo "✅ 已 push"
+
+      # --- 通知 ---
+      - name: Notify on merge conflict
+        if: failure() && steps.merge.outcome == 'failure'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          PR_URL: ${{ steps.merge.outputs.conflict_pr_url }}
+        run: |
+          chmod +x .github/scripts/notify.sh
+          if [[ -n "${PR_URL}" ]]; then
+            ./.github/scripts/notify.sh warning "rustdesk 同步需处理冲突" \
+              "合并上游 tag ${TARGET_TAG} 存在冲突，已创建 PR，请在线解决后合并。" \
+              "" "${PR_URL}"
+          else
+            ./.github/scripts/notify.sh warning "rustdesk 同步失败" \
+              "合并上游 tag ${TARGET_TAG} 时存在冲突，且创建 PR 失败，请查看日志。" \
+              "" "${GITEA_RELEASE_BASE}"
+          fi
+
+      - name: Notify on fork version mismatch
+        if: failure() && steps.hbb.outcome == 'failure'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          HBB_COMMIT: ${{ steps.hbb.outputs.hbb_commit }}
+        run: |
+          chmod +x .github/scripts/notify.sh
+          ./.github/scripts/notify.sh warning "rustdesk 同步停止" \
+            "hbb_common fork 不含 commit ${HBB_COMMIT:0:12}（tag ${TARGET_TAG} 所需），请手动 sync fork 后重试。" \
+            "" "${GITEA_RELEASE_BASE}"
+
+      - name: Notify on success
+        if: success() && steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          chmod +x .github/scripts/notify.sh
+          ./.github/scripts/notify.sh info "rustdesk 同步完成" \
+            "已合并上游 ${TARGET_TAG} 并更新 VERSION，build-and-publish 即将自动构建。" \
+            "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
