@@ -101,6 +101,9 @@ jobs:
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # Key
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs   
 
@@ -350,6 +353,9 @@ jobs:
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # Key
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
 
@@ -531,6 +537,9 @@ jobs:
           # 替换Key
           sed -i.bak '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           rm -f $WORKSPACE/libs/hbb_common/src/config.rs.bak
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i.bak "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
           rm -f $WORKSPACE/src/common.rs.bak 
@@ -688,6 +697,9 @@ jobs:
           # 替换Key
           sed -i.bak '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           rm -f $WORKSPACE/libs/hbb_common/src/config.rs.bak
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i.bak "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
           rm -f $WORKSPACE/src/common.rs.bak  
@@ -1031,6 +1043,9 @@ jobs:
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # Key
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
@@ -1332,6 +1347,9 @@ jobs:
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # Key
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
@@ -1526,6 +1544,9 @@ jobs:
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # Key
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs 
 
@@ -1885,6 +1906,9 @@ jobs:
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # Key
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
@@ -2116,6 +2140,9 @@ jobs:
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # Key
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
@@ -2218,6 +2245,9 @@ jobs:
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # Key
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
@@ -2310,6 +2340,9 @@ jobs:
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
           # Key
           sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/raw/branch/main/latest.json" || true
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
 
