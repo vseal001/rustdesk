@@ -27,7 +27,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  workflows: write
 
 env:
   UPSTREAM_REPO: "rustdesk/rustdesk"
@@ -217,7 +216,6 @@ jobs:
         run: |
           set -uo pipefail
           # 检测上游 tag 对 .github/workflows/ 的改动（merge 自动提交 HEAD，merge 前 HEAD~1）
-          # 用于发 ntfy 提醒：即使自动合并了，也让你知道上游改了哪些 workflow，便于核对
           WF_CHANGED=$(git diff --name-only HEAD~1 HEAD -- .github/workflows/ 2>/dev/null || echo "")
           if [[ -n "${WF_CHANGED}" ]]; then
             echo "⚠️ 上游 ${TARGET_TAG} 改动了 workflow 文件:"
@@ -226,6 +224,23 @@ jobs:
           else
             echo "上游 ${TARGET_TAG} 未改动 workflow 文件"
             echo "wf_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Exclude upstream workflow changes
+        if: steps.idem.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          # 撤销 merge 带入的 workflow 文件改动，保留你的注入点和自定义 sed。
+          # 必须在 Bump VERSION 之前：先把 workflow 恢复到 merge 前(HEAD~1)，
+          # 再由后续 Bump VERSION 重新写入新版本号。
+          # 原因：GitHub YAML 不支持声明 workflows 权限 scope，默认 GITHUB_TOKEN
+          # 无法 push .github/workflows/ 文件；排除后绕过此限制，且你的
+          # replace-update-source.sh 注入点(11处)和 RENDEZVOUS/RS_PUB_KEY sed 100%保留。
+          if git diff --name-only HEAD~1 HEAD -- .github/workflows/ | grep -q .; then
+            git checkout HEAD~1 -- .github/workflows/
+            echo "已撤销上游 workflow 改动（保留你的注入点与自定义 sed）"
+          else
+            echo "上游未改动 workflow，无需撤销"
           fi
 
       - name: Bump VERSION fields
@@ -248,7 +263,7 @@ jobs:
           git add -A
           git commit -m "sync: merge upstream ${TARGET_TAG} + bump VERSION + re-point hbb_common"
           git push origin master
-          echo "✅ 已 push（含上游 workflow 改动，已声明 workflows:write 权限）"
+          echo "✅ 已 push（workflow 改动已排除，无需 workflows 权限）"
 
       # --- 通知 ---
       - name: Notify on merge conflict
@@ -296,5 +311,5 @@ jobs:
         run: |
           chmod +x .github/scripts/notify.sh
           ./.github/scripts/notify.sh warning "rustdesk 上游改了 workflow" \
-            "上游 ${TARGET_TAG} 改动了 .github/workflows/ 文件，已自动合并进来。请核对 flutter-build.yml：确认你的 replace-update-source.sh 注入点和 RENDEZVOUS/RS_PUB_KEY sed 仍存在（git 不报这类语义冲突，可能被上游同区域改动静默覆盖）。" \
+            "上游 ${TARGET_TAG} 改动了 .github/workflows/ 文件，本次已排除（你的注入点已保留）。如需引入上游 workflow 新逻辑，请手动对比 rustdesk/rustdesk 的该 tag 改动后合并到你的 flutter-build.yml。" \
             "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
