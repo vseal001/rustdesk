@@ -111,15 +111,17 @@ jobs:
 
       - name: Wait for GitHub Release assets to settle
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # GitHub Release 是 draft 状态（私有，外部不可见），
+          # /releases/tags/<tag> 对 draft 返回 404，故改用 /releases 列表 + tag_name 过滤
           for i in $(seq 1 20); do
             n=$(curl -fsSL \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPO_FULL}/releases/tags/${TAG}" \
-              | jq '[.assets[]?] | length')
-            echo "尝试 $i: GitHub Release ${TAG} 资产数 = ${n}"
-            [[ "${n}" -gt 0 ]] && exit 0
+              "https://api.github.com/repos/${GITHUB_REPO_FULL}/releases?per_page=100" \
+              | jq --arg t "${TAG}" '[.[] | select(.tag_name==$t)] | .[0].assets // [] | length')
+            echo "尝试 $i: GitHub Release ${TAG}(含draft) 资产数 = ${n}"
+            if [[ "${n}" -gt 0 ]] 2>/dev/null; then exit 0; fi
             sleep 30
           done
           echo "::warning::未在 GitHub Release ${TAG} 上发现资产"
@@ -177,10 +179,13 @@ jobs:
           API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
           AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
           mkdir -p ./assets && cd ./assets
+          # GitHub Release 是 draft，/releases/tags/<tag> 返回 404，
+          # 改用 /releases 列表按 tag_name 过滤取 assets 数组
           ASSETS_JSON=$(curl -fsSL \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPO_FULL}/releases/tags/${TAG}")
+            "https://api.github.com/repos/${GITHUB_REPO_FULL}/releases?per_page=100" \
+            | jq --arg t "${TAG}" '[.[] | select(.tag_name==$t)] | .[0]')
           COUNT=$(echo "${ASSETS_JSON}" | jq '[.assets[]?] | length')
           echo "待镜像资产数: ${COUNT}"
           # 收集已上传文件名列表，供通知使用
