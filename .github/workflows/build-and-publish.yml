@@ -53,7 +53,7 @@ jobs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: master
           fetch-depth: 0
@@ -140,7 +140,7 @@ jobs:
       NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
     steps:
       - name: Checkout scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: master
           sparse-checkout: |
@@ -282,12 +282,10 @@ jobs:
         env:
           REL_ID: ${{ steps.gitea.outputs.rel_id }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
           AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
           mkdir -p ./assets && cd ./assets
-          # GitHub Release 是 draft，/releases/tags/<tag> 返回 404，
-          # 改用 /releases 列表按 tag_name 过滤取 assets 数组
           ASSETS_JSON=$(curl -fsSL \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
@@ -296,8 +294,7 @@ jobs:
           COUNT=$(echo "${ASSETS_JSON}" | jq '[.assets[]?] | length')
           echo "待镜像资产数: ${COUNT}"
 
-          # 先清空 Gitea release 的所有旧资产，避免历史版本残留累积
-          # （softprops/action-gh-release 默认追加模式，同 tag release 会累积多次构建产物）
+          # 清空 Gitea release 旧资产
           echo "清理 Gitea release ${REL_ID} 的旧资产..."
           curl -fsSL "${AUTH[@]}" "${API}/releases/${REL_ID}/assets" \
             | jq -r '.[].id' 2>/dev/null | while read -r old_id; do
@@ -305,31 +302,41 @@ jobs:
             done
           echo "Gitea 旧资产已清空"
 
-          # 收集已上传文件名列表，供通知使用
           UPLOADED=""
           echo "${ASSETS_JSON}" | jq -c '.assets[]?' | while read -r a; do
             NAME=$(echo "${a}" | jq -r '.name')
             URL=$(echo "${a}" | jq -r '.url')
             [[ -z "${NAME}" || "${NAME}" == "null" ]] && continue
-            # 防御性过滤：只镜像文件名含当前 TAG 的产物，
-            # 避免同 release 里混入其他版本(如旧 VERSION 错误时残留的 1.4.5 产物)
-            # 注意 rpm/部分文件名格式为 rustdesk-1.4.6-0.x86_64.rpm，TAG 前缀匹配即可
             if ! echo "${NAME}" | grep -q "rustdesk-${TAG}"; then
               echo "==> 跳过(版本不符): ${NAME}"
               continue
             fi
-            echo "==> 下载并上传: ${NAME}"
-            curl -fsSL -o "${NAME}" \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/octet-stream" \
-              "${URL}"
+            echo "==> 处理: ${NAME}"
+            # 下载（超时 10 分钟/文件，进度显示百分比，过滤 URL）
+            # --max-time 总超时；--speed-time + --speed-limit 检测停滞(60秒无数据则失败)
+            echo "   下载中..."
+            if ! curl -fSL --max-time 600 --speed-time 60 --speed-limit 1024 \
+                -o "${NAME}" \
+                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/octet-stream" \
+                "${URL}" 2>&1 | sed 's|https://[^ ]*|***(URL)***|g'; then
+              echo "   ❌ 下载失败(超时或错误): ${NAME}"
+              continue
+            fi
+            SIZE=$(stat -c%s "${NAME}" 2>/dev/null || stat -f%z "${NAME}")
+            echo "   已下载 ${NAME} ($((SIZE/1024/1024))MB)，上传中..."
             ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "${NAME}")
-            curl -fsSL "${AUTH[@]}" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary "@${NAME}" \
-              "${API}/releases/${REL_ID}/assets?name=${ENC}" > /dev/null
-            echo "   ✅ 已上传 ${NAME}"
-            # 追加到文件列表（while 子shell，写入文件再读回）
+            # 上传（超时 10 分钟，进度显示百分比，过滤 URL）
+            if ! curl -fsSL --max-time 600 --speed-time 60 --speed-limit 1024 \
+                "${AUTH[@]}" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary "@${NAME}" \
+                "${API}/releases/${REL_ID}/assets?name=${ENC}" 2>&1 \
+                | sed 's|https://[^ ]*|***(URL)***|g; s|'"${GITEA_TOKEN}"'|***|g' > /dev/null; then
+              echo "   ❌ 上传失败(超时或错误): ${NAME}"
+              continue
+            fi
+            echo "   ✅ 已上传 ${NAME} ($((SIZE/1024/1024))MB)"
             echo "${NAME}" >> ../uploaded_assets.txt
           done
 

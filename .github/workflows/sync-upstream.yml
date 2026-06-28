@@ -44,7 +44,7 @@ jobs:
       NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
     steps:
       - name: Checkout this repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: master
           fetch-depth: 0
