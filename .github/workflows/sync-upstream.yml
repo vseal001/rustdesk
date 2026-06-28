@@ -33,7 +33,8 @@ permissions:
 env:
   UPSTREAM_REPO: "rustdesk/rustdesk"
   HBB_COMMON_FORK_URL: "https://github.com/vseal001/hbb_common"
-  GITEA_RELEASE_BASE: "https://gitea.ai0128.com:8443/git_public/rustdesk_auto_update/releases"
+  # 用现有 GITEA_API_URL + GITEA_REPO 拼接 release base，不新增 secret
+  GITEA_RELEASE_BASE: "${{ secrets.GITEA_API_URL }}/${{ secrets.GITEA_REPO }}"
 
 jobs:
   sync:

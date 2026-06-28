@@ -2,19 +2,22 @@
 #
 # 触发：
 #   - workflow_run：sync-upstream.yml 在 master 成功后触发。
-#   - workflow_dispatch：可手动触发（可指定 TAG，可 skip_build 跳过编译）。
+#   - workflow_dispatch：可手动触发（可指定 TAG）。
 #
 # 流程：
-#   1. guard 解析 TAG。
-#   2. clean-release（skip_build 时跳过）：删除该 TAG 的 GitHub release+tag。
-#   3. build（skip_build 时跳过）：复用 flutter-build.yml 全平台构建。
-#   4. mirror-to-gitea：源码增量镜像 + 产物镜像 + 链接重写 + latest.json + ntfy。
+#   1. 读 .github/latest-synced-tag 作为 TAG_NAME。
+#   2. 复用 flutter-build.yml 全平台构建（构建时由 replace-update-source.sh
+#      注入更新源，lib.rs/common.rs 保持上游原版），产物发布到本仓库 GitHub Release。
+#   3. mirror-to-gitea job：从 GitHub Release 拉资产，经 Gitea API 上传到
+#      rustdesk_auto_update 的 release。
+#   4. publish-latest-json：在 Gitea 仓库根写入 latest.json（兼容上游
+#      VersionCheckResponse 的 {"url":.../tag/<ver>} 格式），客户端注入的
+#      版本检查端点即指向该文件的 raw URL。
 #
-# 需要在 GitHub Secrets 配置：
-#   GITEA_API_URL  = https://XXX.COM
-#   GITEA_REPO     = XXX
-#   GITEA_TOKEN    = Gitea 用户访问令牌
-#   NTFY_URL / NTFY_TOKEN
+# 需要在 GitHub Secrets 配置（Gitea 站点地址全部走 secret，不在 workflow 硬编码）：
+#   GITEA_API_URL  = https://xxx.com   （Gitea 站点根地址）
+#   GITEA_REPO     = xxx/xxx （owner/repo）
+#   GITEA_TOKEN    = Gitea 用户访问令牌（read/write）
 name: Build and Publish to Gitea
 
 on:
@@ -61,6 +64,7 @@ jobs:
           INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
+          # 输入 latest 或留空 -> 读最近同步的版本；否则用指定 tag
           if [[ -n "${INPUT_TAG}" && "${INPUT_TAG}" != "latest" ]]; then
             TAG="${INPUT_TAG}"
           elif [[ -f .github/latest-synced-tag ]]; then
@@ -73,6 +77,10 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "构建/发布标签: ${TAG}"
 
+  # 在 build 之前彻底删除该 TAG 的 GitHub release 及其 tag。
+  # softprops/action-gh-release 默认追加模式会累积多版本产物（如 1.4.5 残留混进 1.4.6），
+  # 逐个删产物不彻底；直接删除整个 release（+ tag）最干净，build 时会重建全新 release。
+  # skip_build 时跳过清理（用已有 release 资产验证镜像功能）。
   clean-release:
     needs: guard
     if: ${{ github.event.inputs.skip_build != 'true' }}
@@ -85,6 +93,8 @@ jobs:
           set -uo pipefail
           GH_API="https://api.github.com/repos/${GITHUB_REPO_FULL}"
           GH_AUTH=(-H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json")
+
+          # 1. 找到该 TAG 的 release（draft 也能列出）并删除整个 release
           REL=$(curl -fsSL "${GH_AUTH[@]}" "${GH_API}/releases?per_page=100" \
             | jq --arg t "${TAG}" '[.[] | select(.tag_name==$t)] | .[0]')
           REL_ID=$(echo "${REL}" | jq -r '.id // empty')
@@ -95,6 +105,8 @@ jobs:
           else
             echo "未找到 GitHub release ${TAG}（首次构建，无需清理）"
           fi
+
+          # 2. 删除该 tag（若存在），让 build 时 softprops 重建全新 release + tag
           TAG_REF=$(curl -fsSL "${GH_AUTH[@]}" "${GH_API}/git/ref/tags/${TAG}" 2>/dev/null | jq -r '.ref // empty')
           if [[ -n "${TAG_REF}" ]]; then
             echo "删除 tag ${TAG}..."
@@ -115,6 +127,7 @@ jobs:
       upload-tag: ${{ needs.guard.outputs.tag }}
 
   mirror-to-gitea:
+    # skip_build 时不依赖 build（用已有 release 资产验证镜像功能）
     needs: [guard, build]
     if: ${{ always() && needs.guard.result == 'success' }}
     runs-on: ubuntu-22.04
@@ -147,10 +160,13 @@ jobs:
       - name: Mirror source code to Gitea
         run: |
           set -uo pipefail
+          # 增量镜像源码到 Gitea：以 Gitea 现有仓库为起点，只拉取 GitHub 新增 commit，推送增量。
           GITEA_PUSH_URL="${GITEA_API_URL}/${GITEA_REPO}.git"
           GH_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          # 认证 URL（token 内嵌 oauth2: 前缀）。Gitea 自签证书需 sslVerify=false。
           AUTH_URL=$(echo "${GITEA_PUSH_URL}" | sed "s|https://|https://oauth2:${GITEA_TOKEN}@|")
 
+          # 标记敏感值：GitHub Actions 自动遮蔽日志中匹配项为 ***
           echo "::add-mask::${GITEA_PUSH_URL}"
           echo "::add-mask::${AUTH_URL}"
           echo "::add-mask::${GITEA_API_URL}"
@@ -160,13 +176,17 @@ jobs:
 
           rm -rf /tmp/src-mirror && mkdir -p /tmp/src-mirror
           cd /tmp/src-mirror
+          # 包装函数：执行 git 命令，过滤 AUTH_URL/token/明文URL 为 ***，保留真实退出码
           run_git() {
             "$@" 2>&1 | sed -E "s|${AUTH_URL}|***(Gitea URL)***|g; s|${GITEA_PUSH_URL}|***(Gitea URL)***|g; s|${GITEA_TOKEN}|***|g"
             return "${PIPESTATUS[0]}"
           }
 
+          # 第一步：以 Gitea 仓库为 origin 克隆（首次为空则 init 新仓库）
+          # sslVerify=false（Gitea 自签证书）；token 内嵌 URL（经测试 extraheader 在此 Gitea 失败）
           if run_git git -c http.sslVerify=false clone --progress --origin gitea "${AUTH_URL}" .; then
             echo "✅ 已克隆 Gitea 现有仓库（增量模式）"
+            # remote URL 改为带 token 的（后续 push 需认证）
             git remote set-url gitea "${AUTH_URL}"
             git remote add github "${GH_URL}" 2>/dev/null || git remote set-url github "${GH_URL}"
             run_git git -c http.sslVerify=false fetch --progress github master --no-tags
@@ -185,6 +205,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          # 推送到 Gitea（remote 已带 token，sslVerify=false 走自签证书）
           echo "=== 推送 main 到 Gitea ==="
           if ! run_git git -c http.sslVerify=false push --progress --force gitea refs/heads/main:refs/heads/main; then
             echo "force push 失败，尝试普通 push..."
@@ -198,6 +219,8 @@ jobs:
       - name: Wait for GitHub Release assets to settle
         run: |
           set -uo pipefail
+          # GitHub Release 是 draft 状态（私有，外部不可见），
+          # /releases/tags/<tag> 对 draft 返回 404，故改用 /releases 列表 + tag_name 过滤
           for i in $(seq 1 20); do
             n=$(curl -fsSL \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -216,6 +239,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # 从源站 rustdesk/rustdesk 取该 tag 的 release 描述(body)
           BODY=""
           if gh api "repos/rustdesk/rustdesk/releases/tags/${TAG}" --jq '.body' > /tmp/upstream_body.md 2>/dev/null; then
             BODY=$(cat /tmp/upstream_body.md)
@@ -226,6 +250,7 @@ jobs:
           else
             echo "✅ 已同步源站 release 描述（${#BODY} 字符）"
           fi
+          # 写入文件，避免 GITHUB_OUTPUT 转义多行 markdown 的问题
           printf '%s' "${BODY}" > /tmp/release_body.md
 
       - name: Create or get Gitea release
@@ -234,10 +259,12 @@ jobs:
           set -euo pipefail
           API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
           AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
+          # 从文件读取源站 release body（多行 markdown）
           BODY_JSON=$(jq -Rs '{tag_name:$t, name:$t, body:., draft:false, prerelease:false}' --arg t "${TAG}" < /tmp/release_body.md)
           REL=$(curl -fsSL "${AUTH[@]}" "${API}/releases/tags/${TAG}" 2>/dev/null || echo "")
           if [[ -n "${REL}" && "$(echo "${REL}" | jq -r '.id // empty')" != "" ]]; then
             REL_ID=$(echo "${REL}" | jq -r '.id')
+            # release 已存在：PATCH 更新 body 为最新源站描述
             PATCH_BODY=$(jq -nc --rawfile body /tmp/release_body.md '{body:$body}')
             curl -fsSL "${AUTH[@]}" -H "Content-Type: application/json" \
               -X PATCH "${API}/releases/${REL_ID}" -d "${PATCH_BODY}" > /dev/null || true
@@ -259,6 +286,8 @@ jobs:
           API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
           AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
           mkdir -p ./assets && cd ./assets
+          # GitHub Release 是 draft，/releases/tags/<tag> 返回 404，
+          # 改用 /releases 列表按 tag_name 过滤取 assets 数组
           ASSETS_JSON=$(curl -fsSL \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
@@ -267,6 +296,8 @@ jobs:
           COUNT=$(echo "${ASSETS_JSON}" | jq '[.assets[]?] | length')
           echo "待镜像资产数: ${COUNT}"
 
+          # 先清空 Gitea release 的所有旧资产，避免历史版本残留累积
+          # （softprops/action-gh-release 默认追加模式，同 tag release 会累积多次构建产物）
           echo "清理 Gitea release ${REL_ID} 的旧资产..."
           curl -fsSL "${AUTH[@]}" "${API}/releases/${REL_ID}/assets" \
             | jq -r '.[].id' 2>/dev/null | while read -r old_id; do
@@ -274,10 +305,15 @@ jobs:
             done
           echo "Gitea 旧资产已清空"
 
+          # 收集已上传文件名列表，供通知使用
+          UPLOADED=""
           echo "${ASSETS_JSON}" | jq -c '.assets[]?' | while read -r a; do
             NAME=$(echo "${a}" | jq -r '.name')
             URL=$(echo "${a}" | jq -r '.url')
             [[ -z "${NAME}" || "${NAME}" == "null" ]] && continue
+            # 防御性过滤：只镜像文件名含当前 TAG 的产物，
+            # 避免同 release 里混入其他版本(如旧 VERSION 错误时残留的 1.4.5 产物)
+            # 注意 rpm/部分文件名格式为 rustdesk-1.4.6-0.x86_64.rpm，TAG 前缀匹配即可
             if ! echo "${NAME}" | grep -q "rustdesk-${TAG}"; then
               echo "==> 跳过(版本不符): ${NAME}"
               continue
@@ -293,13 +329,15 @@ jobs:
               --data-binary "@${NAME}" \
               "${API}/releases/${REL_ID}/assets?name=${ENC}" > /dev/null
             echo "   ✅ 已上传 ${NAME}"
+            # 追加到文件列表（while 子shell，写入文件再读回）
             echo "${NAME}" >> ../uploaded_assets.txt
           done
 
+          # 汇总已上传文件名（while 在子 shell，改用文件传递）
           cd ..
           if [[ -f uploaded_assets.txt ]]; then
             UPLOADED=$(cat uploaded_assets.txt)
-            echo "已上传附件:"
+            echo "已上传 ${COUNT} 个附件:"
             echo "${UPLOADED}"
           fi
 
@@ -311,11 +349,14 @@ jobs:
           set -euo pipefail
           API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
           AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
+          # 从 Gitea release 最终确认附件清单（最权威）
           ASSETS=$(curl -fsSL "${AUTH[@]}" "${API}/releases/${REL_ID}/assets")
+          # 构造附件清单文本：每行一个文件名
           LIST=$(echo "${ASSETS}" | jq -r '.[].name' 2>/dev/null | sort -u)
           COUNT=$(echo "${LIST}" | grep -c . || true)
           echo "Gitea release 最终附件数: ${COUNT}"
           echo "${LIST}"
+          # 写入文件（多行），通知时读取
           echo "${LIST}" > /tmp/asset_list.txt
 
       - name: Rewrite release body links to Gitea
@@ -327,6 +368,8 @@ jobs:
           API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
           AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
           GITEA_BASE="${GITEA_API_URL}/${GITEA_REPO}"
+          # 用 Python 做精确替换：只替换 Gitea release 实际存在的附件链接，
+          # 保留 assets/(截图)、pull/、issues/ 等非附件链接，避免死链。
           python3 << PYEOF
           import json, re, urllib.request, ssl
 
@@ -334,9 +377,11 @@ jobs:
           ctx.check_hostname = False
           ctx.verify_mode = ssl.CERT_NONE
 
+          # 读取源站原始 body
           with open("/tmp/release_body.md", "r", encoding="utf-8") as f:
               body = f.read()
 
+          # 读取 Gitea release 实际附件清单
           req = urllib.request.Request(
               "${API}/releases/${REL_ID}/assets",
               headers={"Authorization": "token ${GITEA_TOKEN}"}
@@ -348,10 +393,13 @@ jobs:
           GITEA_BASE = "${GITEA_BASE}"
           TAG = "${TAG}"
 
+          # 匹配 github.com/rustdesk/rustdesk/releases/download/<tag>/<文件名>
           pattern = re.compile(
               r"https?://github\.com/rustdesk/rustdesk/releases/download/[^/]+/([^)\s]+)"
           )
-          counters = [0, 0]
+          # 用 list 绕过 Python 闭包对 nonlocal 的要求（heredoc 顶层作用域下
+          # nonlocal 会报 'no binding for nonlocal'，mutable 容器更稳）
+          counters = [0, 0]  # [replaced, kept]
           def repl(m):
               fname = m.group(1)
               if fname in existing:
@@ -359,7 +407,7 @@ jobs:
                   return f"{GITEA_BASE}/releases/download/{TAG}/{fname}"
               else:
                   counters[1] += 1
-                  return m.group(0)
+                  return m.group(0)  # 保留原 GitHub 链接
 
           new_body = pattern.sub(repl, body)
           print(f"已替换 {counters[0]} 个附件链接，保留 {counters[1]} 个(Gitea 无此附件)")
@@ -368,6 +416,7 @@ jobs:
               f.write(new_body)
           PYEOF
 
+          # PATCH 更新 Gitea release body
           PATCH_BODY=$(jq -nc --rawfile body /tmp/release_body.md '{body:$body}')
           curl -fsSL "${AUTH[@]}" -H "Content-Type: application/json" \
             -X PATCH "${API}/releases/${REL_ID}" -d "${PATCH_BODY}" > /dev/null
@@ -380,10 +429,14 @@ jobs:
           set -euo pipefail
           API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
           AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
+          # latest.json 内容：上游 VersionCheckResponse 期望的 {"url":".../tag/<ver>"}
+          # 客户端 rsplit('/') 取版本号，updater 把 tag 替换为 download 得下载地址。
           REPO_HTML="${GITEA_API_URL}/${GITEA_REPO}"
           URL_VALUE="${REPO_HTML}/releases/tag/${TAG}"
           CONTENT=$(jq -nc --arg u "${URL_VALUE}" '{url:$u}')
+          # Base64 编码内容（Gitea 创建/更新文件 API 要求）
           B64=$(printf '%s' "${CONTENT}" | base64 -w 0)
+          # 先尝试更新，失败则创建（Gitea 返回 404 表示文件不存在）
           CODE=$(curl -sk -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
             "${API}/contents/latest.json?ref=main")
           if [[ "${CODE}" == "200" ]]; then
@@ -421,6 +474,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x .github/scripts/notify.sh
+          # 拼接附件清单到 message（每行一个文件名）
           ASSET_MSG=""
           if [[ -f /tmp/asset_list.txt ]]; then
             ASSET_COUNT=$(grep -c . /tmp/asset_list.txt || true)
