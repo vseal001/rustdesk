@@ -138,6 +138,8 @@ jobs:
       GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
       NTFY_URL: ${{ secrets.NTFY_URL }}
       NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+      # 直连子域名（灰云，绕过 CF 100MB 限制），大文件用。留空则全部走 CF。
+      GITEA_DIRECT_URL: ${{ secrets.GITEA_DIRECT_URL }}
     steps:
       - name: Checkout scripts
         uses: actions/checkout@v5
@@ -253,56 +255,24 @@ jobs:
           # 写入文件，避免 GITHUB_OUTPUT 转义多行 markdown 的问题
           printf '%s' "${BODY}" > /tmp/release_body.md
 
-      - name: Create or get Gitea release
-        id: gitea
-        run: |
-          set -euo pipefail
-          API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
-          AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
-          # 从文件读取源站 release body（多行 markdown）
-          BODY_JSON=$(jq -Rs '{tag_name:$t, name:$t, body:., draft:false, prerelease:false}' --arg t "${TAG}" < /tmp/release_body.md)
-          REL=$(curl -fsSL "${AUTH[@]}" "${API}/releases/tags/${TAG}" 2>/dev/null || echo "")
-          if [[ -n "${REL}" && "$(echo "${REL}" | jq -r '.id // empty')" != "" ]]; then
-            REL_ID=$(echo "${REL}" | jq -r '.id')
-            # release 已存在：PATCH 更新 body 为最新源站描述
-            PATCH_BODY=$(jq -nc --rawfile body /tmp/release_body.md '{body:$body}')
-            curl -fsSL "${AUTH[@]}" -H "Content-Type: application/json" \
-              -X PATCH "${API}/releases/${REL_ID}" -d "${PATCH_BODY}" > /dev/null || true
-            echo "Gitea release ${TAG} 已存在(id=${REL_ID})，body 已更新"
-          else
-            REL=$(curl -fsSL "${AUTH[@]}" -H "Content-Type: application/json" \
-              -X POST "${API}/releases" -d "${BODY_JSON}")
-            REL_ID=$(echo "${REL}" | jq -r '.id')
-            echo "已创建 Gitea release ${TAG}(id=${REL_ID})，body 为源站描述"
-          fi
-          echo "rel_id=${REL_ID}" >> "$GITHUB_OUTPUT"
-
-      - name: Mirror assets to Gitea
-        id: mirror
-        env:
-          REL_ID: ${{ steps.gitea.outputs.rel_id }}
+      - name: Download assets & prepare release body
+        id: prepare
         run: |
           set -uo pipefail
-          API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
-          AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
-          mkdir -p ./assets && cd ./assets
+          GITEA_BASE="${GITEA_API_URL}/${GITEA_REPO}"
+          mkdir -p ./assets
+
+          # 1. 从 GitHub release 下载所有匹配 TAG 的资产
+          echo "=== 下载资产 ==="
           ASSETS_JSON=$(curl -fsSL \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPO_FULL}/releases?per_page=100" \
             | jq --arg t "${TAG}" '[.[] | select(.tag_name==$t)] | .[0]')
           COUNT=$(echo "${ASSETS_JSON}" | jq '[.assets[]?] | length')
-          echo "待镜像资产数: ${COUNT}"
+          echo "待处理资产数: ${COUNT}"
 
-          # 清空 Gitea release 旧资产
-          echo "清理 Gitea release ${REL_ID} 的旧资产..."
-          curl -fsSL "${AUTH[@]}" "${API}/releases/${REL_ID}/assets" \
-            | jq -r '.[].id' 2>/dev/null | while read -r old_id; do
-              [[ -n "${old_id}" ]] && curl -fsSL "${AUTH[@]}" -X DELETE "${API}/releases/assets/${old_id}" || true
-            done
-          echo "Gitea 旧资产已清空"
-
-          UPLOADED=""
+          > downloaded_files.txt
           echo "${ASSETS_JSON}" | jq -c '.assets[]?' | while read -r a; do
             NAME=$(echo "${a}" | jq -r '.name')
             URL=$(echo "${a}" | jq -r '.url')
@@ -311,102 +281,30 @@ jobs:
               echo "==> 跳过(版本不符): ${NAME}"
               continue
             fi
-            echo "==> 处理: ${NAME}"
-            # 下载（超时 10 分钟/文件，进度显示百分比，过滤 URL）
-            # --max-time 总超时；--speed-time + --speed-limit 检测停滞(60秒无数据则失败)
-            echo "   下载中..."
-            if ! curl -fSL --max-time 600 --speed-time 60 --speed-limit 1024 \
-                -o "${NAME}" \
+            echo "==> 下载: ${NAME}"
+            curl -fSL --max-time 600 --speed-time 60 --speed-limit 1024 \
+                -o "assets/${NAME}" \
                 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                 -H "Accept: application/octet-stream" \
-                "${URL}" 2>&1 | sed 's|https://[^ ]*|***(URL)***|g'; then
-              echo "   ❌ 下载失败(超时或错误): ${NAME}"
-              continue
-            fi
-            SIZE=$(stat -c%s "${NAME}" 2>/dev/null || stat -f%z "${NAME}")
-            echo "   已下载 ${NAME} ($((SIZE/1024/1024))MB)，上传中..."
-            ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "${NAME}")
-            # 上传（超时 10 分钟，进度显示百分比，过滤 URL）
-            if ! curl -fsSL --max-time 600 --speed-time 60 --speed-limit 1024 \
-                "${AUTH[@]}" \
-                -H "Content-Type: application/octet-stream" \
-                --data-binary "@${NAME}" \
-                "${API}/releases/${REL_ID}/assets?name=${ENC}" 2>&1 \
-                | sed 's|https://[^ ]*|***(URL)***|g; s|'"${GITEA_TOKEN}"'|***|g' > /dev/null; then
-              echo "   ❌ 上传失败(超时或错误): ${NAME}"
-              continue
-            fi
-            echo "   ✅ 已上传 ${NAME} ($((SIZE/1024/1024))MB)"
-            echo "${NAME}" >> ../uploaded_assets.txt
+                "${URL}" 2>&1 | sed 's|https://[^ ]*|***(URL)***|g' \
+                && { echo "${NAME}" >> downloaded_files.txt; echo "   ✅ ${NAME}"; } \
+                || echo "   ❌ 下载失败: ${NAME}"
           done
 
-          # 汇总已上传文件名（while 在子 shell，改用文件传递）
-          cd ..
-          if [[ -f uploaded_assets.txt ]]; then
-            UPLOADED=$(cat uploaded_assets.txt)
-            echo "已上传 ${COUNT} 个附件:"
-            echo "${UPLOADED}"
-          fi
-
-      - name: Collect asset list for notification
-        id: assetlist
-        env:
-          REL_ID: ${{ steps.gitea.outputs.rel_id }}
-        run: |
-          set -euo pipefail
-          API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
-          AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
-          # 从 Gitea release 最终确认附件清单（最权威）
-          ASSETS=$(curl -fsSL "${AUTH[@]}" "${API}/releases/${REL_ID}/assets")
-          # 构造附件清单文本：每行一个文件名
-          LIST=$(echo "${ASSETS}" | jq -r '.[].name' 2>/dev/null | sort -u)
-          COUNT=$(echo "${LIST}" | grep -c . || true)
-          echo "Gitea release 最终附件数: ${COUNT}"
-          echo "${LIST}"
-          # 写入文件（多行），通知时读取
-          echo "${LIST}" > /tmp/asset_list.txt
-
-      - name: Rewrite release body links to Gitea
-        id: rewrite
-        env:
-          REL_ID: ${{ steps.gitea.outputs.rel_id }}
-        run: |
-          set -euo pipefail
-          API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
-          AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
-          GITEA_BASE="${GITEA_API_URL}/${GITEA_REPO}"
-          # 用 Python 做精确替换：只替换 Gitea release 实际存在的附件链接，
-          # 保留 assets/(截图)、pull/、issues/ 等非附件链接，避免死链。
-          python3 << PYEOF
-          import json, re, urllib.request, ssl
-
-          ctx = ssl.create_default_context()
-          ctx.check_hostname = False
-          ctx.verify_mode = ssl.CERT_NONE
-
-          # 读取源站原始 body
+          # 2. 本地重写 release body 链接（不访问 Gitea API，避免 403）
+          echo "=== 重写 release body 链接 ==="
+          cat downloaded_files.txt 2>/dev/null | sort -u | jq -R . | jq -s . > /tmp/downloaded_set.json
+          python3 - << 'PYEOF'
+          import json, re
           with open("/tmp/release_body.md", "r", encoding="utf-8") as f:
               body = f.read()
-
-          # 读取 Gitea release 实际附件清单
-          req = urllib.request.Request(
-              "${API}/releases/${REL_ID}/assets",
-              headers={"Authorization": "token ${GITEA_TOKEN}"}
-          )
-          assets = json.loads(urllib.request.urlopen(req, context=ctx, timeout=20).read().decode("utf-8"))
-          existing = {a["name"] for a in assets}
-          print(f"Gitea 实际附件 {len(existing)} 个")
-
-          GITEA_BASE = "${GITEA_BASE}"
-          TAG = "${TAG}"
-
-          # 匹配 github.com/rustdesk/rustdesk/releases/download/<tag>/<文件名>
-          pattern = re.compile(
-              r"https?://github\.com/rustdesk/rustdesk/releases/download/[^/]+/([^)\s]+)"
-          )
-          # 用 list 绕过 Python 闭包对 nonlocal 的要求（heredoc 顶层作用域下
-          # nonlocal 会报 'no binding for nonlocal'，mutable 容器更稳）
-          counters = [0, 0]  # [replaced, kept]
+          existing = set(json.load(open("/tmp/downloaded_set.json")))
+          print(f"本地已下载附件 {len(existing)} 个")
+          import os
+          GITEA_BASE = os.environ["PREPARE_GITEA_BASE"]
+          TAG = os.environ["TAG"]
+          pattern = re.compile(r"https?://github\.com/rustdesk/rustdesk/releases/download/[^/]+/([^)\s]+)")
+          counters = [0, 0]
           def repl(m):
               fname = m.group(1)
               if fname in existing:
@@ -414,20 +312,110 @@ jobs:
                   return f"{GITEA_BASE}/releases/download/{TAG}/{fname}"
               else:
                   counters[1] += 1
-                  return m.group(0)  # 保留原 GitHub 链接
-
+                  return m.group(0)
           new_body = pattern.sub(repl, body)
-          print(f"已替换 {counters[0]} 个附件链接，保留 {counters[1]} 个(Gitea 无此附件)")
-
+          print(f"已替换 {counters[0]} 个附件链接，保留 {counters[1]} 个")
           with open("/tmp/release_body.md", "w", encoding="utf-8") as f:
               f.write(new_body)
           PYEOF
+          echo "✅ body 本地重写完成"
+        env:
+          PREPARE_GITEA_BASE: ${{ secrets.GITEA_API_URL }}/${{ secrets.GITEA_REPO }}
 
-          # PATCH 更新 Gitea release body
-          PATCH_BODY=$(jq -nc --rawfile body /tmp/release_body.md '{body:$body}')
-          curl -fsSL "${AUTH[@]}" -H "Content-Type: application/json" \
-            -X PATCH "${API}/releases/${REL_ID}" -d "${PATCH_BODY}" > /dev/null
-          echo "✅ release body 链接已重写并更新"
+      - name: Recreate Gitea release (delete + create)
+        id: gitea
+        run: |
+          set -uo pipefail
+          API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
+          AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
+
+          # 删除旧 release（整个删除，比循环删 assets 更干净）
+          OLD_REL=$(curl -fsSL "${AUTH[@]}" "${API}/releases/tags/${TAG}" 2>/dev/null || echo "")
+          OLD_ID=$(echo "${OLD_REL}" | jq -r '.id // empty' 2>/dev/null)
+          if [[ -n "${OLD_ID}" && "${OLD_ID}" != "null" ]]; then
+            echo "删除旧 release ${TAG}(id=${OLD_ID})..."
+            curl -fsSL "${AUTH[@]}" -X DELETE "${API}/releases/${OLD_ID}" || true
+          fi
+          curl -fsSL "${AUTH[@]}" -X DELETE "${API}/git/ref/tags/${TAG}" 2>/dev/null || true
+
+          # 创建新 release（带重写后的 body）
+          BODY_JSON=$(jq -Rs '{tag_name:$t, name:$t, body:., draft:false, prerelease:false}' --arg t "${TAG}" < /tmp/release_body.md)
+          NEW_REL=$(curl -fsSL "${AUTH[@]}" -H "Content-Type: application/json" \
+            -X POST "${API}/releases" -d "${BODY_JSON}")
+          REL_ID=$(echo "${NEW_REL}" | jq -r '.id')
+          echo "✅ 已创建新 release ${TAG}(id=${REL_ID})，body 含重写后的链接"
+          echo "rel_id=${REL_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload assets to Gitea release
+        id: mirror
+        env:
+          REL_ID: ${{ steps.gitea.outputs.rel_id }}
+        run: |
+          set -uo pipefail
+          API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
+          AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
+
+          # 按大小分组
+          > small_files.txt; > large_files.txt
+          while read -r NAME; do
+            [[ -z "${NAME}" ]] && continue
+            SIZE=$(stat -c%s "assets/${NAME}" 2>/dev/null || stat -f%z "assets/${NAME}")
+            if [[ -n "${GITEA_DIRECT_URL}" ]] && [[ "${SIZE}" -ge 52428800 ]]; then
+              echo "${NAME}" >> large_files.txt
+            else
+              echo "${NAME}" >> small_files.txt
+            fi
+          done < downloaded_files.txt
+
+          # 小文件：CF CDN 串行
+          if [[ -s small_files.txt ]]; then
+            echo "=== 小文件上传（CF CDN，串行）==="
+            while read -r NAME; do
+              [[ -z "${NAME}" ]] && continue
+              SIZE_MB=$(( $(stat -c%s "assets/${NAME}") / 1024/1024 ))
+              ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "${NAME}")
+              echo "   上传: ${NAME} (${SIZE_MB}MB) [CF CDN]"
+              curl -fsSL --max-time 600 --speed-time 60 --speed-limit 1024 \
+                  "${AUTH[@]}" -H "Content-Type: application/octet-stream" \
+                  --data-binary "@assets/${NAME}" \
+                  "${API}/releases/${REL_ID}/assets?name=${ENC}" 2>&1 \
+                  | sed 's|https://[^ ]*|***(URL)***|g; s|'"${GITEA_TOKEN}"'|***|g' > /dev/null \
+                  && { echo "   ✅ ${NAME}"; echo "${NAME}" >> uploaded_assets.txt; } \
+                  || echo "   ❌ 失败: ${NAME}"
+            done < small_files.txt
+          fi
+
+          # 大文件：直连并发 3
+          if [[ -s large_files.txt ]]; then
+            echo "=== 大文件上传（直连，并发 3）==="
+            DIRECT_API="${GITEA_DIRECT_URL}/api/v1/repos/${GITEA_REPO}"
+            upload_large() {
+              local NAME="$1" API="$2" REL_ID="$3" TOKEN="$4"
+              local SIZE_MB=$(( $(stat -c%s "assets/${NAME}") / 1024/1024 ))
+              local ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "${NAME}")
+              echo "   [$$] 上传: ${NAME} (${SIZE_MB}MB) [直连]"
+              if curl -fsSL --max-time 7200 --speed-time 600 --speed-limit 1024 \
+                  -H "Authorization: token ${TOKEN}" -H "Content-Type: application/octet-stream" \
+                  --data-binary "@assets/${NAME}" \
+                  "${API}/releases/${REL_ID}/assets?name=${ENC}" 2>&1 \
+                  | sed 's|https://[^ ]*|***(URL)***|g; s|'"${TOKEN}"'|***|g' > /dev/null; then
+                echo "   [$$] ✅ ${NAME}"
+                echo "${NAME}" >> uploaded_assets.txt
+              else
+                echo "   [$$] ❌ 失败: ${NAME}"
+              fi
+            }
+            export -f upload_large
+            cat large_files.txt | xargs -P 3 -I {} bash -c 'upload_large "$1" "$2" "$3" "$4"' _ \
+                "${DIRECT_API}" "${REL_ID}" "${GITEA_TOKEN}" {}
+            wait
+          fi
+
+          # 上传清单（本地统计，无需访问 Gitea API）
+          if [[ -f uploaded_assets.txt ]]; then
+            echo "已上传附件:"
+            sort -u uploaded_assets.txt | tee /tmp/asset_list.txt
+          fi
 
       - name: Publish latest.json to Gitea repo root
         env:
