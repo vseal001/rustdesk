@@ -33,6 +33,11 @@ on:
         description: "要构建/发布的标签（如 1.4.8）；填 latest 或留空则用最近同步的版本"
         required: false
         default: "latest"
+      skip_build:
+        description: "跳过编译步骤（仅验证 push/镜像/release 功能，用已有的 release 资产）"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -72,8 +77,49 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "构建/发布标签: ${TAG}"
 
-  build:
+  # 在 build 之前彻底删除该 TAG 的 GitHub release 及其 tag。
+  # softprops/action-gh-release 默认追加模式会累积多版本产物（如 1.4.5 残留混进 1.4.6），
+  # 逐个删产物不彻底；直接删除整个 release（+ tag）最干净，build 时会重建全新 release。
+  # skip_build 时跳过清理（用已有 release 资产验证镜像功能）。
+  clean-release:
     needs: guard
+    if: ${{ github.event.inputs.skip_build != 'true' }}
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ needs.guard.outputs.tag }}
+    steps:
+      - name: Delete existing GitHub release and tag for clean rebuild
+        run: |
+          set -uo pipefail
+          GH_API="https://api.github.com/repos/${GITHUB_REPO_FULL}"
+          GH_AUTH=(-H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json")
+
+          # 1. 找到该 TAG 的 release（draft 也能列出）并删除整个 release
+          REL=$(curl -fsSL "${GH_AUTH[@]}" "${GH_API}/releases?per_page=100" \
+            | jq --arg t "${TAG}" '[.[] | select(.tag_name==$t)] | .[0]')
+          REL_ID=$(echo "${REL}" | jq -r '.id // empty')
+          if [[ -n "${REL_ID}" && "${REL_ID}" != "null" ]]; then
+            echo "删除 GitHub release ${TAG}(id=${REL_ID})..."
+            curl -fsSL "${GH_AUTH[@]}" -X DELETE "${GH_API}/releases/${REL_ID}" || true
+            echo "✅ release 已删除"
+          else
+            echo "未找到 GitHub release ${TAG}（首次构建，无需清理）"
+          fi
+
+          # 2. 删除该 tag（若存在），让 build 时 softprops 重建全新 release + tag
+          TAG_REF=$(curl -fsSL "${GH_AUTH[@]}" "${GH_API}/git/ref/tags/${TAG}" 2>/dev/null | jq -r '.ref // empty')
+          if [[ -n "${TAG_REF}" ]]; then
+            echo "删除 tag ${TAG}..."
+            curl -fsSL "${GH_AUTH[@]}" -X DELETE "${GH_API}/git/ref/tags/${TAG}" || true
+            echo "✅ tag 已删除"
+          else
+            echo "tag ${TAG} 不存在，跳过"
+          fi
+          echo "✅ 清理完成，build 将创建全新的 release"
+
+  build:
+    needs: [guard, clean-release]
+    if: ${{ github.event.inputs.skip_build != 'true' }}
     uses: ./.github/workflows/flutter-build.yml
     secrets: inherit
     with:
@@ -81,7 +127,9 @@ jobs:
       upload-tag: ${{ needs.guard.outputs.tag }}
 
   mirror-to-gitea:
+    # skip_build 时不依赖 build（用已有 release 资产验证镜像功能）
     needs: [guard, build]
+    if: ${{ always() && needs.guard.result == 'success' }}
     runs-on: ubuntu-22.04
     env:
       TAG: ${{ needs.guard.outputs.tag }}
@@ -117,22 +165,22 @@ jobs:
           # 用 GITEA_TOKEN 认证 push。
           GITEA_PUSH_URL="${GITEA_API_URL}/${GITEA_REPO}.git"
           AUTH_URL=$(echo "${GITEA_PUSH_URL}" | sed "s|https://|https://oauth2:${GITEA_TOKEN}@|")
-          cd "${GITHUB_WORKSPACE}"
-          # 配置 git 允许推送当前目录（sparse-checkout 受限），用临时克隆更稳妥
+          # 完整克隆（非 shallow）：Gitea 拒绝 shallow update，必须 unshallow 才能 push。
+          # 先浅克隆省时，再 fetch --unshallow 拉全历史。
           rm -rf /tmp/src-mirror && mkdir -p /tmp/src-mirror
           git clone --depth 1 --branch master "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" /tmp/src-mirror
           cd /tmp/src-mirror
+          git fetch --unshallow
+          echo "完整历史已拉取"
           # 添加 Gitea remote 并 force push master 到 main
           # force：rustdesk_auto_update 的 main 可能有 latest.json/README，源码镜像覆盖它们
           # 后续 Publish latest.json step 会重建 latest.json
           git remote add gitea "${AUTH_URL}" 2>/dev/null || git remote set-url gitea "${AUTH_URL}"
           git push --force gitea HEAD:refs/heads/main
-          # 推送 tag（若该 tag 在本地存在）
+          # 推送 tag（完整历史后 tag 应存在；不存在则打 tag 再推）
           if git rev-parse "${TAG}" >/dev/null 2>&1; then
             git push --force gitea "refs/tags/${TAG}"
           else
-            # fetch 后再推 tag
-            git fetch --unshallow 2>/dev/null || git fetch --depth 100
             git tag -f "${TAG}" HEAD 2>/dev/null || true
             git push --force gitea "refs/tags/${TAG}" 2>/dev/null || echo "tag ${TAG} 推送跳过"
           fi
