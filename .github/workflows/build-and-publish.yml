@@ -159,32 +159,61 @@ jobs:
 
       - name: Mirror source code to Gitea
         run: |
-          set -euo pipefail
-          # 把 vseal001/rustdesk 源码（当前 master 快照 + tag）推送到 Gitea 的 main 分支。
-          # 用独立 checkout（完整源码），避免与 sparse-checkout 的 scripts 冲突。
-          # 用 GITEA_TOKEN 认证 push。
+          set -uo pipefail
+          # 增量镜像源码到 Gitea：以 Gitea 现有仓库为起点，只拉取 GitHub 新增 commit，推送增量。
           GITEA_PUSH_URL="${GITEA_API_URL}/${GITEA_REPO}.git"
-          AUTH_URL=$(echo "${GITEA_PUSH_URL}" | sed "s|https://|https://oauth2:${GITEA_TOKEN}@|")
-          # 完整克隆（非 shallow）：Gitea 拒绝 shallow update，必须 unshallow 才能 push。
-          # 先浅克隆省时，再 fetch --unshallow 拉全历史。
+          GH_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+
+          # 把拼接后的完整 URL 标记为敏感：GitHub Actions 会自动遮蔽日志中所有匹配项，
+          # 这样 git 进度日志里即使出现完整 URL 也显示为 ***，不泄露 Gitea host。
+          echo "::add-mask::${GITEA_PUSH_URL}"
+          echo "::add-mask::${GITEA_API_URL}"
+          GITEA_HOST=$(echo "${GITEA_API_URL}" | sed 's|https://||')
+          echo "::add-mask::${GITEA_HOST}"
+
+          # 配置 git 凭证：用 credential helper 注入 token（不进 URL/remote）。
+          git config --global credential.helper store
+          printf 'machine %s\nlogin oauth2\npassword %s\n' "${GITEA_HOST}" "${GITEA_TOKEN}" > ~/.git-credentials
+          chmod 600 ~/.git-credentials
+
           rm -rf /tmp/src-mirror && mkdir -p /tmp/src-mirror
-          git clone --depth 1 --branch master "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" /tmp/src-mirror
           cd /tmp/src-mirror
-          git fetch --unshallow
-          echo "完整历史已拉取"
-          # 添加 Gitea remote 并 force push master 到 main
-          # force：rustdesk_auto_update 的 main 可能有 latest.json/README，源码镜像覆盖它们
-          # 后续 Publish latest.json step 会重建 latest.json
-          git remote add gitea "${AUTH_URL}" 2>/dev/null || git remote set-url gitea "${AUTH_URL}"
-          git push --force gitea HEAD:refs/heads/main
-          # 推送 tag（完整历史后 tag 应存在；不存在则打 tag 再推）
-          if git rev-parse "${TAG}" >/dev/null 2>&1; then
-            git push --force gitea "refs/tags/${TAG}"
+          # 包装函数：执行 git 命令，过滤 URL，保留真实退出码（PIPESTATUS[0]）
+          run_git() { "$@" 2>&1 | sed "s|${GITEA_PUSH_URL}|***(Gitea URL)***|g"; return "${PIPESTATUS[0]}"; }
+
+          # 第一步：以 Gitea 仓库为 origin 克隆（首次为空则 init 新仓库）
+          # --progress 让进度可见；完整 URL 被 sed 替换为 ***(Gitea URL)***
+          if run_git git clone --progress --origin gitea "${GITEA_PUSH_URL}" .; then
+            echo "✅ 已克隆 Gitea 现有仓库（增量模式）"
+            git remote add github "${GH_URL}" 2>/dev/null || git remote set-url github "${GH_URL}"
+            run_git git fetch --progress github master --no-tags
+            git checkout -B main github/master
+            git fetch github "refs/tags/${TAG}:refs/tags/${TAG}" --no-tags 2>/dev/null || git tag -f "${TAG}" HEAD
           else
-            git tag -f "${TAG}" HEAD 2>/dev/null || true
-            git push --force gitea "refs/tags/${TAG}" 2>/dev/null || echo "tag ${TAG} 推送跳过"
+            echo "Gitea 仓库为空或不可访问，首次全量初始化..."
+            git init
+            git remote add github "${GH_URL}"
+            run_git git fetch --progress github master --no-tags
+            git checkout -B main github/master
+            git fetch github "refs/tags/${TAG}:refs/tags/${TAG}" --no-tags 2>/dev/null || git tag -f "${TAG}" HEAD
+            git remote add gitea "${GITEA_PUSH_URL}"
           fi
-          echo "✅ 源码已镜像到 ${GITEA_API_URL}/${GITEA_REPO} 的 main 分支"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 推送到 Gitea（用 run_git 过滤 URL，保留进度+真实退出码）
+          echo "=== 推送 main 到 Gitea ==="
+          if ! run_git git push --progress --force gitea refs/heads/main:refs/heads/main; then
+            echo "force push 失败，尝试普通 push..."
+            run_git git push --progress gitea refs/heads/main:refs/heads/main
+          fi
+          echo "=== 推送 tag ${TAG} ==="
+          run_git git push --progress --force gitea "refs/tags/${TAG}" || echo "tag ${TAG} 推送跳过"
+
+          # 清理凭证
+          rm -f ~/.git-credentials
+          echo "✅ 源码增量镜像完成（Gitea main + tag ${TAG}）"
 
       - name: Wait for GitHub Release assets to settle
         run: |
