@@ -109,6 +109,35 @@ jobs:
           [[ "${miss}" == "1" ]] && exit 1
           echo "Gitea 发布站: ${GITEA_API_URL}/${GITEA_REPO}"
 
+      - name: Mirror source code to Gitea
+        run: |
+          set -euo pipefail
+          # 把 vseal001/rustdesk 源码（当前 master 快照 + tag）推送到 Gitea 的 main 分支。
+          # 用独立 checkout（完整源码），避免与 sparse-checkout 的 scripts 冲突。
+          # 用 GITEA_TOKEN 认证 push。
+          GITEA_PUSH_URL="${GITEA_API_URL}/${GITEA_REPO}.git"
+          AUTH_URL=$(echo "${GITEA_PUSH_URL}" | sed "s|https://|https://oauth2:${GITEA_TOKEN}@|")
+          cd "${GITHUB_WORKSPACE}"
+          # 配置 git 允许推送当前目录（sparse-checkout 受限），用临时克隆更稳妥
+          rm -rf /tmp/src-mirror && mkdir -p /tmp/src-mirror
+          git clone --depth 1 --branch master "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" /tmp/src-mirror
+          cd /tmp/src-mirror
+          # 添加 Gitea remote 并 force push master 到 main
+          # force：rustdesk_auto_update 的 main 可能有 latest.json/README，源码镜像覆盖它们
+          # 后续 Publish latest.json step 会重建 latest.json
+          git remote add gitea "${AUTH_URL}" 2>/dev/null || git remote set-url gitea "${AUTH_URL}"
+          git push --force gitea HEAD:refs/heads/main
+          # 推送 tag（若该 tag 在本地存在）
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            git push --force gitea "refs/tags/${TAG}"
+          else
+            # fetch 后再推 tag
+            git fetch --unshallow 2>/dev/null || git fetch --depth 100
+            git tag -f "${TAG}" HEAD 2>/dev/null || true
+            git push --force gitea "refs/tags/${TAG}" 2>/dev/null || echo "tag ${TAG} 推送跳过"
+          fi
+          echo "✅ 源码已镜像到 ${GITEA_API_URL}/${GITEA_REPO} 的 main 分支"
+
       - name: Wait for GitHub Release assets to settle
         run: |
           set -uo pipefail
@@ -188,23 +217,34 @@ jobs:
             | jq --arg t "${TAG}" '[.[] | select(.tag_name==$t)] | .[0]')
           COUNT=$(echo "${ASSETS_JSON}" | jq '[.assets[]?] | length')
           echo "待镜像资产数: ${COUNT}"
+
+          # 先清空 Gitea release 的所有旧资产，避免历史版本残留累积
+          # （softprops/action-gh-release 默认追加模式，同 tag release 会累积多次构建产物）
+          echo "清理 Gitea release ${REL_ID} 的旧资产..."
+          curl -fsSL "${AUTH[@]}" "${API}/releases/${REL_ID}/assets" \
+            | jq -r '.[].id' 2>/dev/null | while read -r old_id; do
+              [[ -n "${old_id}" ]] && curl -fsSL "${AUTH[@]}" -X DELETE "${API}/releases/assets/${old_id}" || true
+            done
+          echo "Gitea 旧资产已清空"
+
           # 收集已上传文件名列表，供通知使用
           UPLOADED=""
           echo "${ASSETS_JSON}" | jq -c '.assets[]?' | while read -r a; do
             NAME=$(echo "${a}" | jq -r '.name')
             URL=$(echo "${a}" | jq -r '.url')
             [[ -z "${NAME}" || "${NAME}" == "null" ]] && continue
+            # 防御性过滤：只镜像文件名含当前 TAG 的产物，
+            # 避免同 release 里混入其他版本(如旧 VERSION 错误时残留的 1.4.5 产物)
+            # 注意 rpm/部分文件名格式为 rustdesk-1.4.6-0.x86_64.rpm，TAG 前缀匹配即可
+            if ! echo "${NAME}" | grep -q "rustdesk-${TAG}"; then
+              echo "==> 跳过(版本不符): ${NAME}"
+              continue
+            fi
             echo "==> 下载并上传: ${NAME}"
             curl -fsSL -o "${NAME}" \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/octet-stream" \
               "${URL}"
-            EXIST=$(curl -fsSL "${AUTH[@]}" "${API}/releases/${REL_ID}/assets" \
-              | jq -r --arg n "${NAME}" '[.[] | select(.name==$n)] | .[0].id // empty')
-            if [[ -n "${EXIST}" ]]; then
-              echo "   Gitea 已存在 ${NAME}，删除旧资产 id=${EXIST}"
-              curl -fsSL "${AUTH[@]}" -X DELETE "${API}/releases/assets/${EXIST}" || true
-            fi
             ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "${NAME}")
             curl -fsSL "${AUTH[@]}" \
               -H "Content-Type: application/octet-stream" \
@@ -279,20 +319,20 @@ jobs:
           pattern = re.compile(
               r"https?://github\.com/rustdesk/rustdesk/releases/download/[^/]+/([^)\s]+)"
           )
-          replaced = 0
-          kept = 0
+          # 用 list 绕过 Python 闭包对 nonlocal 的要求（heredoc 顶层作用域下
+          # nonlocal 会报 'no binding for nonlocal'，mutable 容器更稳）
+          counters = [0, 0]  # [replaced, kept]
           def repl(m):
-              nonlocal replaced, kept
               fname = m.group(1)
               if fname in existing:
-                  replaced += 1
+                  counters[0] += 1
                   return f"{GITEA_BASE}/releases/download/{TAG}/{fname}"
               else:
-                  kept += 1
+                  counters[1] += 1
                   return m.group(0)  # 保留原 GitHub 链接
 
           new_body = pattern.sub(repl, body)
-          print(f"已替换 {replaced} 个附件链接，保留 {kept} 个(Gitea 无此附件)")
+          print(f"已替换 {counters[0]} 个附件链接，保留 {counters[1]} 个(Gitea 无此附件)")
 
           with open("/tmp/release_body.md", "w", encoding="utf-8") as f:
               f.write(new_body)
