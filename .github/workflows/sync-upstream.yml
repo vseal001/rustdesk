@@ -349,11 +349,10 @@ jobs:
           # 上游 VERSION 改动不会进入。此处兜底：确保 VERSION 仍是动态语法
           # （防止 .gitattributes 失效或行格式变化时回退到硬编码）。
           if grep -q '^  VERSION: "[0-9]' .github/workflows/flutter-build.yml; then
-            # 解码出字面量 ${{ inputs.upload-tag }}，export 给 perl 读，避免 shell/perl 双重转义
+            # 解码出动态表达式字面量，export 给 perl 读，避免 shell/perl 双重转义
             export LITERAL=$(printf '%s' "${DYN_TAG_B64}" | base64 -d)
             perl -i -pe 's|^  VERSION: ".*"|  VERSION: "$ENV{LITERAL}"|' .github/workflows/flutter-build.yml
             echo "已将 flutter-build.yml 的 VERSION 强制重应用为动态表达式"
-          fi
           fi
           # Cargo.toml 的 version 仍是硬编码常量，需要 bump
           sed -i -E 's|^version = ".*"|version = "'"${TARGET_TAG}"'"|' Cargo.toml
