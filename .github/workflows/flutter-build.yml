@@ -45,7 +45,7 @@ env:
 <<<<<<< HEAD
   NDK_VERSION: "r27c"
 =======
-  VERSION: "1.4.7"
+  VERSION: "${{ inputs.upload-tag }}"
   NDK_VERSION: "r28c"
 >>>>>>> 1.4.7
   #signing keys env variable checks
