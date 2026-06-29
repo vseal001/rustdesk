@@ -42,9 +42,6 @@ jobs:
     env:
       NTFY_URL: ${{ secrets.NTFY_URL }}
       NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
-    outputs:
-      skip: ${{ steps.idem.outputs.skip }}
-      target_tag: ${{ steps.resolve.outputs.target_tag }}
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v5
@@ -190,6 +187,27 @@ jobs:
           fi
 
           if [[ "${AUTO_RESOLVABLE}" == "true" ]]; then
+            # 全局兜底：提交前扫描所有冲突文件，确保绝无冲突标记残留。
+            # 这道闸防御 awk/perl 漏判（如一个文件同时含 version 冲突和非 version
+            # 冲突时，perl 只清了 version 块，残留的非 version 冲突标记可能被 commit）。
+            # 历史教训：曾因此把含 <<<<<<< 标记的 flutter-build.yml commit 进 master，
+            # 导致下游 build workflow 全线 yaml 解析失败瘫痪。
+            RESIDUAL=""
+            for f in ${CONFLICT_FILES}; do
+              hits=$(grep -nE '^(<<<<<<<|=======|>>>>>>>)' "${f}" 2>/dev/null || true)
+              if [[ -n "${hits}" ]]; then
+                RESIDUAL="${RESIDUAL}${f}:${hits}\n"
+              fi
+            done
+            if [[ -n "${RESIDUAL}" ]]; then
+              echo "⚠️ 提交前扫描发现冲突标记残留（version 替换未覆盖这些块）:"
+              echo -e "${RESIDUAL}"
+              echo "→ 判定为复杂冲突，转 PR 流程，绝不提交含冲突标记的内容"
+              AUTO_RESOLVABLE=false
+            fi
+          fi
+
+          if [[ "${AUTO_RESOLVABLE}" == "true" ]]; then
             git commit --no-edit --no-verify
             echo "merge_rc=0" >> "$GITHUB_OUTPUT"
             echo "✅ 合并 ${TARGET_TAG} 成功（version 冲突已自动解决）"
@@ -221,14 +239,17 @@ jobs:
           echo "已有开放 PR: ${EXISTING_PR:-（无）}"
 
           if [[ -z "${EXISTING_PR}" ]]; then
-            # 首次：回到干净 master，建分支，把含冲突标记的合并提交上去，
-            # 让 GitHub PR 页面可在线解决冲突（Resolve conflicts 按钮）
-            git merge --abort 2>/dev/null || true
+            # 首次：创建一个让 GitHub 服务端能检测到冲突的 PR。
+            # 关键：PR 分支的 HEAD 必须与 base(master) 分叉，GitHub 在合并时
+            # 实时计算 mergeability 才会显示 "Resolve conflicts" 按钮。
+            # 错误做法（旧逻辑）：在本分支内 git merge 上游 tag 并 commit 含 <<<<<<<
+            #   标记的内容——这样 PR HEAD 是"已完成"的 merge commit，GitHub 认为无冲突，
+            #   不显示 Resolve 按钮，用户只看到一坨脏文件。
+            # 正确做法：PR 分支直接指向上游 tag 的 commit，base=master。
+            #   GitHub 合并 PR 时会用三方合并，遇到本地注入块与上游改动同区域
+            #   → 产生真实冲突 → 显示 Resolve 按钮，可在线编辑解决。
             git checkout -f master
-            git checkout -B "${BRANCH}" master
-            git merge --no-commit --no-ff "${TARGET_TAG}" || true
-            git add -A || true
-            git commit -m "sync: merge upstream ${TARGET_TAG} (CONFLICT - needs manual resolve)" --no-verify || true
+            git checkout -B "${BRANCH}" "${TARGET_TAG}"
             git push origin "${BRANCH}" --force
 
             # 显式 --repo 本仓库 + --base 本仓库 master，确保 PR 落在 vseal001/rustdesk
@@ -240,16 +261,25 @@ jobs:
               --body "$(cat <<EOF
           ## 合并冲突 - 需人工解决
 
-          上游标签 **${TARGET_TAG}** 的合并存在非 version 行的冲突，已自动生成本 PR（分支 ${BRANCH}）。
+          上游标签 **${TARGET_TAG}** 与本仓库存在非 version 行的冲突（如 NDK_VERSION、签名步骤等上游改动与本地注入块同区域），已自动生成本 PR。
 
-          **请在 GitHub 的冲突解决界面处理冲突**：
-          1. 点击下方 "Resolve conflicts" 按钮
-          2. 解决所有冲突文件（\`<<<<\` \`====\` \`>>>>\` 标记处）
-          3. Commit merge → 合并本 PR
-          4. 合并后 \`build-and-publish.yml\` 会自动触发构建
+          本 PR 分支直接指向上游 tag，base=master。GitHub 合并时会用三方合并检测冲突，显示 **"Resolve conflicts"** 按钮。
+
+          **解决步骤**：
+          1. 点击 PR 底部 "Resolve conflicts" 按钮
+          2. 解决每个冲突标记（\`<<<<\` \`====\` \`>>>>\`）
+          3. **关键：解决时务必保留本仓库的注入块**，这些是 fork 独有、上游没有的：
+             - \`.github/scripts/replace-update-source.sh "\$WORKSPACE"\` 调用（更新源注入）
+             - \`RENDEZVOUS_SERVERS\` / \`RS_PUB_KEY\` 的 sed（中继服务器/公钥）
+             - \`CUSTOM_API_SERVER\` 的 sed（API 服务器）
+             - \`replace-package-names.sh\` 调用（包名替换）
+             - \`VERSION\` / \`TAG_NAME\` 动态化（\`\${{ inputs.upload-tag }}\`）
+             - \`SKIP_SIGN: 1\`（自签开关）
+          4. Commit merge → 合并本 PR
+          5. 合并后 \`build-and-publish.yml\` 会通过 pull_request 触发器自动构建
 
           > 目标分支：**${GITHUB_REPOSITORY}:master**（本仓库主分支）
-          > 注：仅 version 行的冲突 sync 已自动解决；本 PR 涉及其他代码冲突，请人工核对。
+          > 仅 version 行的冲突 sync 已自动解决；本 PR 涉及上游实质改动与本地注入的冲突。
           > 只要不合并/关闭本 PR，每日同步会保持其开启（持续提醒）。
           EOF
           )" 2>&1 | tail -1) || PR_URL=""
@@ -348,9 +378,10 @@ jobs:
           DYN_TAG_B64: 'JHt7IGlucHV0cy51cGxvYWQtdGFnIH19'
         run: |
           set -euo pipefail
-          # flutter-build.yml 受 .gitattributes merge=ours 保护，merge 时保留本地版本，
-          # 上游 VERSION 改动不会进入。此处兜底：确保 VERSION 仍是动态语法
-          # （防止 .gitattributes 失效或行格式变化时回退到硬编码）。
+          # flutter-build.yml 的 VERSION 行兜底：sync 合并上游后，上游可能把它
+          # 改回硬编码（如 VERSION: "1.4.6"）。此处强制重应用为动态语法
+          # ${{ inputs.upload-tag }}，确保产物文件名跟随实际构建 tag。
+          # 注意：.gitattributes 无 merge=ours 保护（不存在该规则），靠这里兜底。
           if grep -q '^  VERSION: "[0-9]' .github/workflows/flutter-build.yml; then
             # 解码出动态表达式字面量，export 给 perl 读，避免 shell/perl 双重转义
             export LITERAL=$(printf '%s' "${DYN_TAG_B64}" | base64 -d)
@@ -412,7 +443,7 @@ jobs:
         run: |
           chmod +x .github/scripts/notify.sh
           ./.github/scripts/notify.sh info "rustdesk 同步完成" \
-            "已合并上游 ${TARGET_TAG} 并更新 VERSION，随后 trigger-build 作业会主动触发 build-and-publish 构建。" \
+            "已合并上游 ${TARGET_TAG} 并更新 VERSION。build-and-publish.yml 会通过 workflow_run 监听本 workflow 成功后自动触发构建。" \
             "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
 
       - name: Notify on upstream workflow changes
@@ -424,25 +455,3 @@ jobs:
           ./.github/scripts/notify.sh warning "rustdesk 上游改了 workflow" \
             "上游 ${TARGET_TAG} 改动了 .github/workflows/ 文件，已用 BOT_TOKEN 自动合并。请抽查 flutter-build.yml：确认你的 11 处 replace-update-source.sh 注入点和 RENDEZVOUS/RS_PUB_KEY sed 仍存在（这些块 fork 独有，正常不冲突）。" \
             "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
-
-  trigger-build:
-    # sync 成功后主动触发 build-and-publish.yml。
-    # 不单靠 workflow_run 被动触发：workflow_run 有已知限制（仅认默认分支上的
-    # workflow 文件版本、且历史 sync 语法错误导致 conclusion=failure 从未触发过），
-    # 主动调用 workflow_dispatch 更可靠、可观测。
-    needs: sync
-    if: needs.sync.result == 'success' && needs.sync.outputs.skip != 'true'
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Trigger build-and-publish
-        env:
-          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TARGET_TAG: ${{ needs.sync.outputs.target_tag }}
-        run: |
-          set -euo pipefail
-          # 用最新 master 上的 workflow 定义触发，tag 留默认(latest)，
-          # 由 build 读 .github/latest-synced-tag 得到刚同步的版本。
-          gh workflow run "Build and Publish to Gitea" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref master
-          echo "✅ 已触发 build-and-publish.yml（tag=${TARGET_TAG:-latest}）"

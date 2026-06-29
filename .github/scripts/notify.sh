@@ -18,6 +18,8 @@
 #
 # 说明：按钮文字可按场景定制，例如冲突通知把 action_url_1 指向 PR、
 #       label_1 设为"打开冲突 PR"，避免按钮文字与实际跳转不符。
+#       action_url_1 留空时，自动兜底为当前 Action 运行页（GITHUB_RUN_ID），
+#       所以"打开 Action 页面"按钮在失败排查场景总会显示，方便直达日志。
 #
 # 需要在 GitHub Secrets 配置：
 #   NTFY_URL   = https://ntfy.t.toyou.ink:8443

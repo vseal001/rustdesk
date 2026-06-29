@@ -1,7 +1,11 @@
 # 构建全平台并镜像到自建 Gitea 发布站（rustdesk_auto_update）。
 #
-# 触发：
-#   - workflow_run：sync-upstream.yml 在 master 成功后触发。
+# 触发（三条独立路径，互斥场景，不会重复构建）：
+#   - workflow_run：监听 "Sync Upstream Release" 成功完成（sync 直进 master、
+#     无冲突路径）。独立于 sync workflow 内部逻辑，解耦可靠。
+#   - pull_request：当 base=master 的 PR 被合并(closed+merged)时触发
+#     （sync 冲突 PR 人工解决后合并的路径——此时 sync workflow 不再运行，
+#      workflow_run 不会触发，需此触发器补上自动构建）。
 #   - workflow_dispatch：可手动触发（可指定 TAG）。
 #
 # 流程：
@@ -22,9 +26,22 @@ name: Build and Publish to Gitea
 
 on:
   workflow_run:
+    # sync-upstream.yml 成功后被动触发（sync 直进 master、无冲突路径）。
+    # 独立于 sync workflow 内部逻辑：只要 "Sync Upstream Release" 成功完成就触发，
+    # 不依赖 sync 是否有 trigger-build job，解耦更彻底、更可靠。
+    # guard job 会过滤：仅 conclusion == success 才继续。
     workflows: ["Sync Upstream Release"]
     types:
       - completed
+    branches:
+      - master
+  pull_request:
+    # 冲突 PR 合并进 master 时触发构建（sync 冲突解决路径）。
+    # 三触发器互斥：sync 直进 master 走 workflow_run；冲突 PR 合并走 pull_request；
+    # 手动走 workflow_dispatch。不会重复触发同一构建。
+    # guard job 会过滤：仅 closed 且 merged 的 PR 才继续。
+    types:
+      - closed
     branches:
       - master
   workflow_dispatch:
@@ -48,7 +65,16 @@ env:
 jobs:
   guard:
     runs-on: ubuntu-22.04
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    # 触发闸门（三触发器互斥，不会重复构建）：
+    #   - workflow_run：仅当上游 sync 成功完成（conclusion==success，排除 failure/cancelled）
+    #   - pull_request：仅当 base=master 的 PR 被合并（merged=true）；仅关闭未合并则跳过
+    #   - workflow_dispatch：手动触发直接通过
+    if: >-
+      ${{ 
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+        || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+        || github.event_name == 'workflow_dispatch'
+      }}
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -65,6 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           # 输入 latest 或留空 -> 读最近同步的版本；否则用指定 tag
+          # pull_request 事件无 inputs，走 latest 分支读 latest-synced-tag
           if [[ -n "${INPUT_TAG}" && "${INPUT_TAG}" != "latest" ]]; then
             TAG="${INPUT_TAG}"
           elif [[ -f .github/latest-synced-tag ]]; then
@@ -75,7 +102,7 @@ jobs:
             exit 1
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "构建/发布标签: ${TAG}"
+          echo "触发事件: ${GITHUB_EVENT_NAME}，构建/发布标签: ${TAG}"
 
   # 在 build 之前彻底删除该 TAG 的 GitHub release 及其 tag。
   # softprops/action-gh-release 默认追加模式会累积多版本产物（如 1.4.5 残留混进 1.4.6），
