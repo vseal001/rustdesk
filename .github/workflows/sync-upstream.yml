@@ -131,6 +131,8 @@ jobs:
         env:
           TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
           GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          # 见 Bump VERSION 步骤说明：base64 携带字面量 ${{ inputs.upload-tag }}
+          DYN_TAG_B64: 'JHt7IGlucHV0cy51cGxvYWQtdGFnIH19'
         run: |
           set -uo pipefail
           # 第一步：尝试普通合并
@@ -165,12 +167,14 @@ jobs:
 
           if [[ "${AUTO_RESOLVABLE}" == "true" ]]; then
             echo "✅ 所有冲突仅为 version 行，自动解决..."
+            # 解码字面量 ${{ inputs.upload-tag }}（flutter-build.yml 用），供下方 perl 读取
+            export LITERAL=$(printf '%s' "${DYN_TAG_B64}" | base64 -d)
             # 对每个冲突文件，把 version 行的冲突块替换为 TARGET_TAG
             for f in ${CONFLICT_FILES}; do
               # Cargo.toml: version = "x" 冲突 → 用 TARGET_TAG
               perl -i -0pe 's/<<<<<<< .*?\n(version\s*=\s*)"[^"]*"\n=======\n\1"[^"]*"\n>>>>>>> .*?\n/${1}"'"${TARGET_TAG}"'"\n/g' "${f}" 2>/dev/null || true
-              # flutter-build.yml: VERSION: "x" 冲突 → 用动态语法
-              perl -i -0pe 's/<<<<<<< .*?\n(\s*VERSION:\s*)"[^"]*"\n=======\n\1"[^"]*"\n>>>>>>> .*?\n/${1}"\${{ inputs.upload-tag }}"\n/g' "${f}" 2>/dev/null || true
+              # flutter-build.yml: VERSION: "x" 冲突 → 用动态语法 ${{ inputs.upload-tag }}
+              perl -i -0pe 's/<<<<<<< .*?\n(\s*VERSION:\s*)"[^"]*"\n=======\n\1"[^"]*"\n>>>>>>> .*?\n/${1}"$ENV{LITERAL}"\n/g' "${f}" 2>/dev/null || true
               # 兜底：清除任何残留的冲突标记（如果是 version 行）
               if grep -q '^<<<<<<<\|^=======\|^>>>>>>>' "${f}" 2>/dev/null; then
                 echo "文件 ${f} 仍有冲突标记，无法自动解决"
@@ -334,14 +338,22 @@ jobs:
         if: steps.idem.outputs.skip != 'true'
         env:
           TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          # 用 base64 携带字面量字符串 "${{ inputs.upload-tag }}"，绕开 GA 对 run:
+          # 块里 ${{ }} 序列的替换（本 workflow 无此 input，会被替换成空导致语法错误）。
+          # 该字符串写入 flutter-build.yml，由 build workflow 运行时解析为实际 tag。
+          # 编码源：printf '%s' '${{ inputs.upload-tag }}' | base64
+          DYN_TAG_B64: 'JHt7IGlucHV0cy51cGxvYWQtdGFnIH19'
         run: |
           set -euo pipefail
           # flutter-build.yml 受 .gitattributes merge=ours 保护，merge 时保留本地版本，
           # 上游 VERSION 改动不会进入。此处兜底：确保 VERSION 仍是动态语法
           # （防止 .gitattributes 失效或行格式变化时回退到硬编码）。
           if grep -q '^  VERSION: "[0-9]' .github/workflows/flutter-build.yml; then
-            sed -i -E 's|^  VERSION: ".*"|  VERSION: "${{ inputs.upload-tag }}"|' .github/workflows/flutter-build.yml
-            echo "已将 flutter-build.yml 的 VERSION 强制重应用为动态 \${{ inputs.upload-tag }}"
+            # 解码出字面量 ${{ inputs.upload-tag }}，export 给 perl 读，避免 shell/perl 双重转义
+            export LITERAL=$(printf '%s' "${DYN_TAG_B64}" | base64 -d)
+            perl -i -pe 's|^  VERSION: ".*"|  VERSION: "$ENV{LITERAL}"|' .github/workflows/flutter-build.yml
+            echo "已将 flutter-build.yml 的 VERSION 强制重应用为动态表达式"
+          fi
           fi
           # Cargo.toml 的 version 仍是硬编码常量，需要 bump
           sed -i -E 's|^version = ".*"|version = "'"${TARGET_TAG}"'"|' Cargo.toml
