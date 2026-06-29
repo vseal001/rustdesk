@@ -429,12 +429,13 @@ jobs:
           echo "0" > /tmp/progress_fail.txt
 
           # 统一上传脚本：序号化 + 进度计数 + 状态图标，日志清晰可读
+          # 参数：$1="序号 文件名"（整行，内部 split）、$2=API、$3=REL_ID、$4=TOKEN、$5=TOTAL
           cat > /tmp/upload_asset.sh << 'SCRIPT'
           #!/bin/bash
           set -uo pipefail
-          SEQ="$1"; NAME="$2"; API="$3"; REL_ID="$4"; TOKEN="$5"
+          LINE="$1"; API="$2"; REL_ID="$3"; TOKEN="$4"; TOTAL="$5"
+          SEQ="${LINE%% *}"; NAME="${LINE#* }"
           SIZE_MB=$(( $(stat -c%s "assets/${NAME}" 2>/dev/null || stat -f%z "assets/${NAME}") / 1024/1024 ))
-          TOTAL="$6"
           ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "${NAME}")
           # 用序号前缀 #01/#02... 代替 PID，更易读；⏳ 表示进行中
           echo "   #${SEQ} ⏳ 开始: ${NAME} (${SIZE_MB}MB)"
@@ -461,12 +462,15 @@ jobs:
 
           echo "=== 上传所有资产（并发 3）==="
           echo "待上传: ${TOTAL} 个"
-          # 给每个文件分配序号，传给脚本
-          awk '{printf "%02d %s\n", NR, $0}' downloaded_files.txt | \
-            xargs -P 3 -I {} bash -c '
-              line="{}"; seq="${line%% *}"; name="${line#* }"
-              bash /tmp/upload_asset.sh "${seq}" "${name}" "'"${UPLOAD_API}"'" "'"${REL_ID}"'" "'"${GITEA_TOKEN}"'" "'"${TOTAL}"'
-            '
+          # 通过环境变量传递参数给子脚本，避免 xargs/bash -c 的引号嵌套陷阱
+          # （曾因 bash -c '...'"${VAR}"'...' 混合引号导致 exit 123）
+          export UPLOAD_API REL_ID GITEA_TOKEN TOTAL
+          # 给每个文件分配序号，每行 "序号 文件名"，用 xargs 调脚本
+          # 用 -d '\n' 保证整行作为单个参数（文件名含空格也安全）
+          awk '{printf "%02d %s\n", NR, $0}' downloaded_files.txt > /tmp/upload_queue.txt
+          # 用 GNU xargs 按"\n"分词，每行一个 -I{} 替换，并发 3
+          # {} 整行传给脚本第一个参数（脚本内部再 split 序号/文件名）
+          cat /tmp/upload_queue.txt | xargs -P 3 -I {} bash /tmp/upload_asset.sh '{}' "${UPLOAD_API}" "${REL_ID}" "${GITEA_TOKEN}" "${TOTAL}"
           wait
 
           # 汇总
@@ -476,6 +480,17 @@ jobs:
           if [[ -f uploaded_assets.txt ]]; then
             echo "已上传附件清单:"
             sort -u uploaded_assets.txt | tee /tmp/asset_list.txt
+          fi
+          # 关键：上传失败则让本 step 失败（exit 1）。
+          # 否则 set -uo pipefail（无 -e）不会因 xargs exit 123 中断，后续步骤
+          # （record built tag、Notify success）仍会执行，导致"上传失败却报成功"。
+          if [[ "${FAIL}" -gt 0 ]]; then
+            echo "::error::有 ${FAIL} 个附件上传失败，本次发布未完成"
+            exit 1
+          fi
+          if [[ "${DONE}" -eq 0 && "${TOTAL}" -gt 0 ]]; then
+            echo "::error::全部 ${TOTAL} 个附件上传失败，本次发布未完成"
+            exit 1
           fi
 
           # 上传清单（本地统计，无需访问 Gitea API）
