@@ -2,7 +2,7 @@
 #
 # 工作内容：
 #   1. 每天（或手动）查询源站最新正式版 release 标签。
-#   2. 与本仓库 .github/latest-synced-tag 幂等判断，已是最新则跳过。
+#   2. 与本仓库 .github/latest-synced-tag 幂等判断，已同步版本 >= 目标则跳过。
 #   3. git merge 上游 tag。若合并冲突 -> 停止并发 ntfy 通知(warning)。
 #   4. 解析 tag 锁定的 hbb_common commit，校验 fork 是否包含该 commit。
 #      若 fork 滞后不含该 commit -> 停止并发通知(warning)，提示手动 sync fork。
@@ -92,11 +92,21 @@ jobs:
             LAST=$(tr -d '[:space:]' < .github/latest-synced-tag)
           fi
           echo "上次同步: '${LAST}'，目标: '${TARGET_TAG}'"
-          if [[ "${LAST}" == "${TARGET_TAG}" ]]; then
+          SKIP=false
+          if [[ -n "${LAST}" ]]; then
+            # LAST >= TARGET_TAG 则跳过（用版本比较，非字符串比较；
+            # 字符串比较下 "1.4.10" < "1.4.9" 会误判，sort -V 可正确处理）
+            NEWEST=$(printf '%s\n%s\n' "${TARGET_TAG}" "${LAST}" | sort -V | tail -1)
+            if [[ "${NEWEST}" == "${LAST}" ]]; then
+              SKIP=true
+            fi
+          fi
+          if [[ "${SKIP}" == "true" ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "已是最新，跳过。"
+            echo "本仓库已在 ${LAST}（>= 目标 ${TARGET_TAG}），跳过。"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "目标 ${TARGET_TAG} 比上次 ${LAST:-（无）} 新，继续同步。"
           fi
 
       - name: Configure git identity
@@ -179,39 +189,85 @@ jobs:
             exit 0
           fi
 
-          # 存在非 version 冲突：中止并创建冲突解决 PR
-          echo "⚠️ 存在无法自动解决的冲突，创建 PR..."
-          git merge --abort
+          # 存在非 version 冲突：创建/复用【单一持续】冲突解决 PR
+          # 设计：base = 本仓库(vseal001/rustdesk) master，绝不指向源站。
+          #      只要冲突未解决，该 PR 持续保持开启（"一直请求"），不堆积多个 PR。
           BRANCH="sync/conflict-${TARGET_TAG}"
-          git push origin --delete "${BRANCH}" 2>/dev/null || true
-          git checkout -b "${BRANCH}"
-          git merge --no-commit --no-ff "${TARGET_TAG}" || true
-          git add -A || true
-          git commit -m "sync: merge upstream ${TARGET_TAG} (CONFLICT - needs manual resolve)" --no-verify || true
-          git push origin "${BRANCH}"
+          echo "⚠️ 存在无法自动解决的冲突，目标分支: ${BRANCH}（base=${GITHUB_REPOSITORY}:master）"
 
-          PR_URL=$(gh pr create \
+          # 显式确认 origin 指向本仓库（绝不推到源站）
+          ORIGIN_URL=$(git remote get-url origin)
+          echo "origin 指向: ${ORIGIN_URL}"
+          if ! echo "${ORIGIN_URL}" | grep -q "${GITHUB_REPOSITORY}"; then
+            echo "::error::origin 未指向本仓库 ${GITHUB_REPOSITORY}，中止 push 防止误推源站"
+            exit 1
+          fi
+
+          # 检查本仓库是否已存在该分支的开放 PR（复用，避免堆积）
+          EXISTING_PR=$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
             --base master \
             --head "${BRANCH}" \
-            --title "sync: 合并上游 ${TARGET_TAG}（含冲突待解决）" \
-            --body "$(cat <<EOF
+            --state open \
+            --json number,url \
+            --jq '.[0].url' 2>/dev/null || echo "")
+          echo "已有开放 PR: ${EXISTING_PR:-（无）}"
+
+          if [[ -z "${EXISTING_PR}" ]]; then
+            # 首次：回到干净 master，建分支，把含冲突标记的合并提交上去，
+            # 让 GitHub PR 页面可在线解决冲突（Resolve conflicts 按钮）
+            git merge --abort 2>/dev/null || true
+            git checkout -f master
+            git checkout -B "${BRANCH}" master
+            git merge --no-commit --no-ff "${TARGET_TAG}" || true
+            git add -A || true
+            git commit -m "sync: merge upstream ${TARGET_TAG} (CONFLICT - needs manual resolve)" --no-verify || true
+            git push origin "${BRANCH}" --force
+
+            # 显式 --repo 本仓库 + --base 本仓库 master，确保 PR 落在 vseal001/rustdesk
+            PR_URL=$(gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base master \
+              --head "${BRANCH}" \
+              --title "sync: 合并上游 ${TARGET_TAG}（含冲突待解决）" \
+              --body "$(cat <<EOF
           ## 合并冲突 - 需人工解决
 
-          上游标签 **${TARGET_TAG}** 的合并存在非 version 行的冲突，已自动生成本 PR。
+          上游标签 **${TARGET_TAG}** 的合并存在非 version 行的冲突，已自动生成本 PR（分支 ${BRANCH}）。
 
           **请在 GitHub 的冲突解决界面处理冲突**：
-          1. 解决所有冲突文件（\`<<<<\` \`====\` \`>>>>\` 标记处）
-          2. 完成后合并本 PR
-          3. 合并后 \`build-and-publish.yml\` 会自动触发构建
+          1. 点击下方 "Resolve conflicts" 按钮
+          2. 解决所有冲突文件（\`<<<<\` \`====\` \`>>>>\` 标记处）
+          3. Commit merge → 合并本 PR
+          4. 合并后 \`build-and-publish.yml\` 会自动触发构建
 
-          > 注：仅 version 行的冲突 sync 已自动解决；本 PR 涉及其他代码冲突，
-          > 请人工核对（可能是上游依赖更新或构建步骤重构）。
+          > 目标分支：**${GITHUB_REPOSITORY}:master**（本仓库主分支）
+          > 注：仅 version 行的冲突 sync 已自动解决；本 PR 涉及其他代码冲突，请人工核对。
+          > 只要不合并/关闭本 PR，每日同步会保持其开启（持续提醒）。
           EOF
           )" 2>&1 | tail -1) || PR_URL=""
+          else
+            # PR 已存在：保持开启（持续请求），不覆盖用户在线解决进度
+            PR_URL="${EXISTING_PR}"
+            echo "✅ 冲突 PR 已存在并保持开启（持续请求）: ${PR_URL}"
+          fi
+
+          # 校验 PR 的 base 确实是本仓库 master（防止误建到源站）
+          if [[ -n "${PR_URL}" ]]; then
+            PR_NUM=$(echo "${PR_URL}" | grep -oE '[0-9]+$')
+            PR_BASE_REPO=$(gh pr view "${PR_NUM}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json baseRepository,headRepository \
+              --jq '.baseRepository.nameWithOwner + " <- " + .headRepository.nameWithOwner' 2>/dev/null || echo "")
+            echo "PR #${PR_NUM} base<-head: ${PR_BASE_REPO}"
+            if [[ -n "${PR_BASE_REPO}" && "${PR_BASE_REPO}" != "${GITHUB_REPOSITORY} <- "* ]]; then
+              echo "::error::PR base 异常：期望 ${GITHUB_REPOSITORY}，实际 ${PR_BASE_REPO}"
+            fi
+          fi
 
           echo "conflict_pr_url=${PR_URL}" >> "$GITHUB_OUTPUT"
           echo "merge_rc=1" >> "$GITHUB_OUTPUT"
-          echo "::error::合并 ${TARGET_TAG} 存在复杂冲突，已创建 PR: ${PR_URL}"
+          echo "::error::合并 ${TARGET_TAG} 存在复杂冲突，冲突 PR: ${PR_URL}"
           exit 1
 
       # --- fork 版本校验：不含所需 commit 则停止 ---
