@@ -355,7 +355,6 @@ jobs:
           # CF CDN 免费版对 POST 上传会缓冲+100s硬超时，导致上传慢/失败。
           # 直连子域名(GITEA_DIRECT_URL)绕过 CF，速度更稳定。
           # 策略：所有文件统一走直连 + 并发3（不区分大小文件）。
-          # 若未配直连域名，回退到 CF(API_URL)，但大文件可能超时。
           if [[ -n "${GITEA_DIRECT_URL}" ]]; then
             UPLOAD_API="${GITEA_DIRECT_URL}/api/v1/repos/${GITEA_REPO}"
             echo "上传路径: 直连(绕过CF)"
@@ -364,15 +363,21 @@ jobs:
             echo "上传路径: CF CDN(未配直连，大文件可能超时)"
           fi
 
-          # 写统一上传脚本（独立文件，避免 export -f 跨 shell 失效）
+          TOTAL=$(wc -l < downloaded_files.txt 2>/dev/null || echo 0)
+          # 初始化进度计数器（done/fail，原子更新）
+          echo "0" > /tmp/progress_done.txt
+          echo "0" > /tmp/progress_fail.txt
+
+          # 统一上传脚本：序号化 + 进度计数 + 状态图标，日志清晰可读
           cat > /tmp/upload_asset.sh << 'SCRIPT'
           #!/bin/bash
           set -uo pipefail
-          NAME="$1"; API="$2"; REL_ID="$3"; TOKEN="$4"
+          SEQ="$1"; NAME="$2"; API="$3"; REL_ID="$4"; TOKEN="$5"
           SIZE_MB=$(( $(stat -c%s "assets/${NAME}" 2>/dev/null || stat -f%z "assets/${NAME}") / 1024/1024 ))
+          TOTAL="$6"
           ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "${NAME}")
-          echo "   [$$] 上传: ${NAME} (${SIZE_MB}MB)"
-          # 直连慢(200KB/s)，max-time 放宽到 2h，speed-time 放宽到 10min（避免慢速误判）
+          # 用序号前缀 #01/#02... 代替 PID，更易读；⏳ 表示进行中
+          echo "   #${SEQ} ⏳ 开始: ${NAME} (${SIZE_MB}MB)"
           HTTP_CODE=$(curl -sSL --max-time 7200 --speed-time 600 --speed-limit 1024 \
               -w "%{http_code}" -o /tmp/resp_$$.txt \
               -H "Authorization: token ${TOKEN}" -H "Content-Type: application/octet-stream" \
@@ -380,25 +385,36 @@ jobs:
               "${API}/releases/${REL_ID}/assets?name=${ENC}" 2>&1 | tail -1)
           RESP=$(sed 's|https://[^ ]*|***(URL)***|g; s|'"${TOKEN}"'|***|g' /tmp/resp_$$.txt 2>/dev/null)
           rm -f /tmp/resp_$$.txt
+          # 原子更新进度计数器
           if [[ "${HTTP_CODE}" == "201" ]]; then
-            echo "   [$$] ✅ ${NAME}"; echo "${NAME}" >> uploaded_assets.txt
+            DONE=$(($(cat /tmp/progress_done.txt) + 1))
+            echo "${DONE}" > /tmp/progress_done.txt
+            echo "${NAME}" >> uploaded_assets.txt
+            echo "   #${SEQ} ✅ 完成: ${NAME} (${SIZE_MB}MB)  [进度 ${DONE}/${TOTAL}]"
           else
-            echo "   [$$] ❌ 失败(HTTP ${HTTP_CODE}): ${NAME} | ${RESP}"
+            FAIL=$(($(cat /tmp/progress_fail.txt) + 1))
+            echo "${FAIL}" > /tmp/progress_fail.txt
+            echo "   #${SEQ} ❌ 失败: ${NAME} (HTTP ${HTTP_CODE})  [已失败 ${FAIL}] | ${RESP}"
           fi
           SCRIPT
           chmod +x /tmp/upload_asset.sh
 
           echo "=== 上传所有资产（并发 3）==="
-          TOTAL=$(wc -l < downloaded_files.txt 2>/dev/null || echo 0)
           echo "待上传: ${TOTAL} 个"
-          cat downloaded_files.txt | xargs -P 3 -I {} bash /tmp/upload_asset.sh {} \
-              "${UPLOAD_API}" "${REL_ID}" "${GITEA_TOKEN}"
+          # 给每个文件分配序号，传给脚本
+          awk '{printf "%02d %s\n", NR, $0}' downloaded_files.txt | \
+            xargs -P 3 -I {} bash -c '
+              line="{}"; seq="${line%% *}"; name="${line#* }"
+              bash /tmp/upload_asset.sh "${seq}" "${name}" "'"${UPLOAD_API}"'" "'"${REL_ID}"'" "'"${GITEA_TOKEN}"'" "'"${TOTAL}"'
+            '
           wait
 
-          # 上传清单（本地统计，无需访问 Gitea API）
+          # 汇总
+          DONE=$(cat /tmp/progress_done.txt 2>/dev/null || echo 0)
+          FAIL=$(cat /tmp/progress_fail.txt 2>/dev/null || echo 0)
+          echo "=== 上传完成: 成功 ${DONE} / 失败 ${FAIL} / 总计 ${TOTAL} ==="
           if [[ -f uploaded_assets.txt ]]; then
-            UPLOADED_N=$(wc -l < uploaded_assets.txt)
-            echo "已上传 ${UPLOADED_N}/${TOTAL} 个附件:"
+            echo "已上传附件清单:"
             sort -u uploaded_assets.txt | tee /tmp/asset_list.txt
           fi
 
