@@ -42,6 +42,9 @@ jobs:
     env:
       NTFY_URL: ${{ secrets.NTFY_URL }}
       NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+    outputs:
+      skip: ${{ steps.idem.outputs.skip }}
+      target_tag: ${{ steps.resolve.outputs.target_tag }}
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v5
@@ -131,7 +134,7 @@ jobs:
         env:
           TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
           GH_TOKEN: ${{ secrets.BOT_TOKEN }}
-          # 见 Bump VERSION 步骤说明：base64 携带字面量 ${{ inputs.upload-tag }}
+          # 见 Bump VERSION 步骤说明：base64 携带动态表达式字面量
           DYN_TAG_B64: 'JHt7IGlucHV0cy51cGxvYWQtdGFnIH19'
         run: |
           set -uo pipefail
@@ -167,13 +170,13 @@ jobs:
 
           if [[ "${AUTO_RESOLVABLE}" == "true" ]]; then
             echo "✅ 所有冲突仅为 version 行，自动解决..."
-            # 解码字面量 ${{ inputs.upload-tag }}（flutter-build.yml 用），供下方 perl 读取
+            # 解码动态表达式字面量（flutter-build.yml 用），供下方 perl 读取
             export LITERAL=$(printf '%s' "${DYN_TAG_B64}" | base64 -d)
             # 对每个冲突文件，把 version 行的冲突块替换为 TARGET_TAG
             for f in ${CONFLICT_FILES}; do
               # Cargo.toml: version = "x" 冲突 → 用 TARGET_TAG
               perl -i -0pe 's/<<<<<<< .*?\n(version\s*=\s*)"[^"]*"\n=======\n\1"[^"]*"\n>>>>>>> .*?\n/${1}"'"${TARGET_TAG}"'"\n/g' "${f}" 2>/dev/null || true
-              # flutter-build.yml: VERSION: "x" 冲突 → 用动态语法 ${{ inputs.upload-tag }}
+              # flutter-build.yml: VERSION: "x" 冲突 → 用动态表达式字面量（由 $ENV{LITERAL} 注入）
               perl -i -0pe 's/<<<<<<< .*?\n(\s*VERSION:\s*)"[^"]*"\n=======\n\1"[^"]*"\n>>>>>>> .*?\n/${1}"$ENV{LITERAL}"\n/g' "${f}" 2>/dev/null || true
               # 兜底：清除任何残留的冲突标记（如果是 version 行）
               if grep -q '^<<<<<<<\|^=======\|^>>>>>>>' "${f}" 2>/dev/null; then
@@ -338,10 +341,10 @@ jobs:
         if: steps.idem.outputs.skip != 'true'
         env:
           TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
-          # 用 base64 携带字面量字符串 "${{ inputs.upload-tag }}"，绕开 GA 对 run:
+          # 用 base64 携带动态表达式字面量字符串，绕开 GA 对 run:
           # 块里 ${{ }} 序列的替换（本 workflow 无此 input，会被替换成空导致语法错误）。
           # 该字符串写入 flutter-build.yml，由 build workflow 运行时解析为实际 tag。
-          # 编码源：printf '%s' '${{ inputs.upload-tag }}' | base64
+          # 编码源（base64）：动态表达式字面量（build workflow 的 inputs.upload-tag）
           DYN_TAG_B64: 'JHt7IGlucHV0cy51cGxvYWQtdGFnIH19'
         run: |
           set -euo pipefail
@@ -381,9 +384,10 @@ jobs:
         run: |
           chmod +x .github/scripts/notify.sh
           if [[ -n "${PR_URL}" ]]; then
+            # action_url_1 指向 PR，label 定制为"打开冲突 PR"，避免按钮文字与跳转不符
             ./.github/scripts/notify.sh warning "rustdesk 同步需处理冲突" \
               "合并上游 tag ${TARGET_TAG} 存在冲突，已创建 PR，请在线解决后合并。" \
-              "" "${PR_URL}"
+              "${PR_URL}" "" "打开冲突PR" ""
           else
             ./.github/scripts/notify.sh warning "rustdesk 同步失败" \
               "合并上游 tag ${TARGET_TAG} 时存在冲突，且创建 PR 失败，请查看日志。" \
@@ -408,7 +412,7 @@ jobs:
         run: |
           chmod +x .github/scripts/notify.sh
           ./.github/scripts/notify.sh info "rustdesk 同步完成" \
-            "已合并上游 ${TARGET_TAG} 并更新 VERSION，build-and-publish 即将自动构建。" \
+            "已合并上游 ${TARGET_TAG} 并更新 VERSION，随后 trigger-build 作业会主动触发 build-and-publish 构建。" \
             "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
 
       - name: Notify on upstream workflow changes
@@ -420,3 +424,25 @@ jobs:
           ./.github/scripts/notify.sh warning "rustdesk 上游改了 workflow" \
             "上游 ${TARGET_TAG} 改动了 .github/workflows/ 文件，已用 BOT_TOKEN 自动合并。请抽查 flutter-build.yml：确认你的 11 处 replace-update-source.sh 注入点和 RENDEZVOUS/RS_PUB_KEY sed 仍存在（这些块 fork 独有，正常不冲突）。" \
             "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
+
+  trigger-build:
+    # sync 成功后主动触发 build-and-publish.yml。
+    # 不单靠 workflow_run 被动触发：workflow_run 有已知限制（仅认默认分支上的
+    # workflow 文件版本、且历史 sync 语法错误导致 conclusion=failure 从未触发过），
+    # 主动调用 workflow_dispatch 更可靠、可观测。
+    needs: sync
+    if: needs.sync.result == 'success' && needs.sync.outputs.skip != 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Trigger build-and-publish
+        env:
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TARGET_TAG: ${{ needs.sync.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          # 用最新 master 上的 workflow 定义触发，tag 留默认(latest)，
+          # 由 build 读 .github/latest-synced-tag 得到刚同步的版本。
+          gh workflow run "Build and Publish to Gitea" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref master
+          echo "✅ 已触发 build-and-publish.yml（tag=${TARGET_TAG:-latest}）"

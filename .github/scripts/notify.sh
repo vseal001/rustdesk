@@ -2,7 +2,7 @@
 # 通过 ntfy 发送构建/同步通知。
 #
 # 用法:
-#   notify.sh <severity> <title> <message> [action_url_1] [action_url_2]
+#   notify.sh <severity> <title> <message> [action_url_1] [action_url_2] [label_1] [label_2]
 #
 # 参数:
 #   severity     : info | warning | error
@@ -13,6 +13,11 @@
 #   message      : 通知正文
 #   action_url_1 : 可选，第 1 个 action 按钮的 URL（默认=Action 运行页面）
 #   action_url_2 : 可选，第 2 个 action 按钮的 URL（默认=Gitea 发布页面）
+#   label_1      : 可选，第 1 个按钮的文字（默认="打开Action页面"）
+#   label_2      : 可选，第 2 个按钮的文字（默认="打开发布页面"）
+#
+# 说明：按钮文字可按场景定制，例如冲突通知把 action_url_1 指向 PR、
+#       label_1 设为"打开冲突 PR"，避免按钮文字与实际跳转不符。
 #
 # 需要在 GitHub Secrets 配置：
 #   NTFY_URL   = https://ntfy.t.toyou.ink:8443
@@ -33,6 +38,8 @@ title="${2:-rustdesk}"
 message="${3:-}"
 action_url_1="${4:-}"
 action_url_2="${5:-}"
+label_1="${6:-打开Action页面}"
+label_2="${7:-打开发布页面}"
 
 # 从环境变量读取配置（由 workflow 注入）
 NTFY_URL="${NTFY_URL:-}"
@@ -80,13 +87,13 @@ build_action() {
 }
 items=""
 if [[ -n "${ACTION_RUN_URL}" ]]; then
-    items="$(build_action "打开Action页面" "${ACTION_RUN_URL}")"
+    items="$(build_action "${label_1}" "${ACTION_RUN_URL}")"
 fi
 if [[ -n "${GITEA_RELEASE_URL}" ]]; then
     if [[ -n "${items}" ]]; then
-        items="${items},$(build_action "打开发布页面" "${GITEA_RELEASE_URL}")"
+        items="${items},$(build_action "${label_2}" "${GITEA_RELEASE_URL}")"
     else
-        items="$(build_action "打开发布页面" "${GITEA_RELEASE_URL}")"
+        items="$(build_action "${label_2}" "${GITEA_RELEASE_URL}")"
     fi
 fi
 actions_array="[${items}]"
