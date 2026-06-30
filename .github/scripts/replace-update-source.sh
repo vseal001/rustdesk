@@ -43,6 +43,17 @@ fi
 WORKSPACE="$1"
 UPDATE_JSON_URL="$2"
 
+# 关键：UPDATE_JSON_URL 非空校验。
+# 若该值为空（secret 未配置/被误删/名字拼错），下方 perl 会把 lib.rs 的 URL
+# 替换成空串（const URL: &str = "";），且 grep -q "" 永远匹配成功，导致
+# "注入失败校验"形同虚设。结果：APK 带空 URL 编译，运行时 do_check_software_update
+# 回退到上游默认地址（rustdesk/rustdesk/release），故障被完全静默。
+# 此处提前拦截，让缺失配置快速报错暴露，而非静默生产出跳上游的客户端。
+if [[ -z "${UPDATE_JSON_URL}" ]]; then
+    log_error "UPDATE_JSON_URL 为空：请检查 GitHub Secret 是否已配置（flutter-build.yml 传入 \${{ secrets.UPDATE_JSON_URL }}）。拒绝注入空 URL。"
+    exit 1
+fi
+
 # 检测操作系统选择 sed 风格
 detect_os() {
     if [[ -n "${RUNNER_OS:-}" ]]; then
@@ -76,8 +87,11 @@ main() {
             :
         fi
 
-        if grep -q "${UPDATE_JSON_URL}" "$lib_rs"; then
-            log_info "✅ lib.rs 端点已注入"
+        # 校验注入结果。注意：不能用 grep -q "${UPDATE_JSON_URL}"——当 URL 为空时
+        # grep 空串恒真，校验失效（已在入口对空值拦截，这里做双保险）。
+        # 改为校验"原上游锚点已消失"：若替换成功，api.rustdesk.com 必然不存在。
+        if ! grep -q 'api\.rustdesk\.com/version/latest' "$lib_rs"; then
+            log_info "✅ lib.rs 端点已注入: ${UPDATE_JSON_URL}"
         else
             log_error "lib.rs 端点注入失败（上游锚点可能已变化，请检查 version_check_request）"
         fi
