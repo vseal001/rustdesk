@@ -184,9 +184,14 @@ jobs:
     #      此时 needs.build.result == 'skipped'，靠 inputs.skip_build 放行）
     # guard 判定跳过（sync 无更新）时整个 mirror 不运行。
     needs: [guard, build]
+    # 关键：必须显式 always()。GitHub Actions 对不含状态函数的 if 会叠加隐式
+    # success() 检查，而 skipped 不算 success——skip_build 模式下 build 被 skip，
+    # 隐式 success() 会抢先否决整个 if，导致 mirror 也被跳过（即使下方 OR 条件
+    # 本应放行）。加 always() 后隐式检查不再叠加，完全交给下方条件自行判定。
     if: >-
       ${{
-        needs.guard.outputs.skip != 'true'
+        always()
+        && needs.guard.outputs.skip != 'true'
         && needs.guard.result == 'success'
         && (needs.build.result == 'success' || github.event.inputs.skip_build == 'true')
       }}
@@ -548,6 +553,12 @@ jobs:
         # 镜像成功后，把本次构建的 TAG 写入 .github/latest-built-tag（master 分支）。
         # 下次 workflow_run（sync 自动触发）时，guard 会比较 latest-built-tag vs
         # latest-synced-tag，相同则跳过（sync 无源码更新）。手动触发不受此影响。
+        #
+        # skip_build 模式下必须跳过本 step：该模式不编译，只是用已有 release 资产
+        # 验证镜像功能。若仍写入 latest-built-tag，会"谎报"该 TAG 已构建完成——
+        # 后续 sync 真正同步进同一 TAG 并触发 workflow_run 时，guard 因
+        # latest-built-tag == latest-synced-tag 而误判跳过，导致本应执行的完整构建丢失。
+        if: github.event.inputs.skip_build != 'true'
         run: |
           set -uo pipefail
           GH_API="https://api.github.com/repos/${GITHUB_REPO_FULL}"
