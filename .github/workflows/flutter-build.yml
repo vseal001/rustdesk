@@ -1563,6 +1563,8 @@ jobs:
           .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs 
+          # 同步 Cargo.toml version 为构建版本（build.py 读它生成 deb/rpm 文件名，须与 env.VERSION 一致）
+          sed -i -E 's|^version = ".*"|version = "'"$VERSION"'"|' $WORKSPACE/Cargo.toml
 
           
       - name: Replace package names and identifiers (using script)
@@ -1927,6 +1929,8 @@ jobs:
           .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
           # 替换 API 服务器
           sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
+          # 同步 Cargo.toml version 为构建版本（build.py 读它生成 deb/rpm 文件名，须与 env.VERSION 一致）
+          sed -i -E 's|^version = ".*"|version = "'"$VERSION"'"|' $WORKSPACE/Cargo.toml
 
           
       - name: Replace package names and identifiers (using script)
