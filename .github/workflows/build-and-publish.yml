@@ -574,8 +574,10 @@ jobs:
               -d "{\"message\":\"chore: record built tag ${TAG}\",\"content\":\"${B64}\",\"sha\":\"${SHA}\",\"branch\":\"master\"}" > /dev/null
             echo "✅ latest-built-tag 已更新为 ${TAG}（sha=${SHA:0:12}）"
           else
+            # GitHub Contents API 创建文件用 PUT（非 POST）。GitHub 只支持 PUT，
+            # 不带 sha 时创建；Gitea 兼容 POST 但 GitHub 对 POST 返回 404。
             curl -fsSL "${GH_AUTH[@]}" -H "Content-Type: application/json" \
-              -X POST "${GH_API}/contents/${PATH_FILE}" \
+              -X PUT "${GH_API}/contents/${PATH_FILE}" \
               -d "{\"message\":\"chore: record built tag ${TAG}\",\"content\":\"${B64}\",\"branch\":\"master\"}" > /dev/null
             echo "✅ latest-built-tag 已创建为 ${TAG}"
           fi
