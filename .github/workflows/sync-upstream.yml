@@ -390,8 +390,16 @@ jobs:
           fi
           # Cargo.toml 的 version 仍是硬编码常量，需要 bump
           sed -i -E 's|^version = ".*"|version = "'"${TARGET_TAG}"'"|' Cargo.toml
+          # flutter/pubspec.yaml 的 version（Android APK 内部 versionName 直接来源）。
+          # 必须与 Cargo.toml 同步 bump，否则 APK 文件名是新版（env.VERSION）但
+          # "关于"页面显示的 versionName 停留在旧版（pubspec 没更新）。
+          # 格式 version: X.Y.Z+buildNum，保留 +buildNum 部分。
+          if [[ -f flutter/pubspec.yaml ]]; then
+            sed -i -E 's|^version: [0-9]+\.[0-9]+\.[0-9]+(\+[0-9]+)?|version: '"${TARGET_TAG}"'\1|' flutter/pubspec.yaml
+            echo "pubspec.yaml version 已 bump 为 ${TARGET_TAG}（保留 build 号）"
+          fi
           printf '%s' "${TARGET_TAG}" > .github/latest-synced-tag
-          echo "VERSION -> ${TARGET_TAG} (flutter-build.yml 动态, Cargo.toml 已 bump)"
+          echo "VERSION -> ${TARGET_TAG} (Cargo.toml + pubspec.yaml 已 bump, flutter-build.yml 动态)"
 
       - name: Commit and push
         if: steps.idem.outputs.skip != 'true'

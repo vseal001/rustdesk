@@ -9,6 +9,13 @@ on:
       upload-tag:
         type: string
         default: "nightly"
+      # git-ref：指定 checkout 的 git ref（tag/分支）。
+      # 非空（如 "1.4.5"）→ checkout 该 tag 的源码编译，VERSION 自然是该 tag 的版本。
+      # 空 → checkout 触发 workflow 的默认 ref（master），向后兼容。
+      # 场景：手动 workflow_dispatch 指定 tag=1.4.5 → 传 git-ref=1.4.5。
+      git-ref:
+        type: string
+        default: ""
 
 # NOTE: F-Droid builder script 'flutter/build_fdroid.sh' reads environment
 # variables from this workflow!
@@ -49,6 +56,9 @@ env:
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
   SKIP_SIGN: 1
+  # git-ref 用于按 tag checkout 编译（如 1.4.5）。非空时各 job checkout 该 tag，
+  # 并在 checkout 后从 master 恢复 fork 注入脚本（tag 的 commit 不含这些脚本）。
+  GIT_REF: "${{ inputs.git-ref }}"
 
 jobs:
   generate-bridge:
@@ -93,11 +103,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
           
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -346,11 +369,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -529,11 +565,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i.bak '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -691,11 +740,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i.bak '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -1041,11 +1103,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -1347,11 +1422,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -1546,11 +1634,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -1912,11 +2013,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -2150,11 +2264,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -2261,11 +2388,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
@@ -2358,11 +2498,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
       - name: Modify servers and keys
         shell: bash
         run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
           WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
           # 替换 ID服务器
           sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
