@@ -62,7 +62,11 @@ env:
 
 jobs:
   generate-bridge:
+    # 传 git-ref：bridge 生成的桥接文件必须与 build 编译的源码版本一致。
+    # 否则 master 的 Dart 生成的 bridge_generated.rs 引用了 tag 源码里没有的函数。
     uses: ./.github/workflows/bridge.yml
+    with:
+      git-ref: ${{ inputs.git-ref }}
 
   build-RustDeskTempTopMostWindow:
     uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml

@@ -4,6 +4,15 @@ name: Build flutter-rust-bridge
 
 on:
   workflow_call:
+    inputs:
+      # git-ref：指定 checkout 的 git ref（tag/分支）。
+      # 非空 → checkout 该 tag 生成桥接文件，与 build job 的 tag 源码版本一致。
+      # 空 → checkout 默认 ref（master）。
+      # 关键：bridge 生成的 bridge_generated.rs 必须与 build 编译的源码版本一致，
+      # 否则会出现"函数找不到"的编译错误（master 的 Dart 有新函数，tag 的 Rust 没有）。
+      git-ref:
+        type: string
+        default: ""
 
 env:
   CARGO_EXPAND_VERSION: "1.0.95"
@@ -27,6 +36,10 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          # git-ref 非空 → checkout 指定 tag 的源码生成桥接（与 build 版本一致）
+          # git-ref 空 → 默认 ref（master）
+          ref: ${{ inputs.git-ref || github.ref }}
+          fetch-depth: 0
           submodules: recursive
 
       - name: Install prerequisites

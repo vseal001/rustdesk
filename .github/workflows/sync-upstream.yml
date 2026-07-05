@@ -275,6 +275,9 @@ jobs:
              - \`replace-package-names.sh\` 调用（包名替换）
              - \`VERSION\` / \`TAG_NAME\` 动态化（\`\${{ inputs.upload-tag }}\`）
              - \`SKIP_SIGN: 1\`（自签开关）
+             - **flutter-build.yml/bridge.yml 的 git-ref 机制**（\`git-ref\` input、
+               checkout 的 \`ref: \${{ inputs.git-ref || github.ref }}\`、\`fetch-depth: 0\`、
+               "已从 master 恢复 fork 注入脚本" 恢复块）—— 用于按 tag checkout 编译
           4. Commit merge → 合并本 PR
           5. 合并后 \`build-and-publish.yml\` 会通过 pull_request 触发器自动构建
 
