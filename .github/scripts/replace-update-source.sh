@@ -109,6 +109,22 @@ main() {
         else
             log_warn "未找到 is_custom_client 函数锚点（可能上游已重构），跳过"
         fi
+
+        # --- 3. 把版本检查的 POST 改成 GET ---
+        # 上游 do_check_software_update() 用 client.post(&url) 请求版本检查端点。
+        # 官方 api.rustdesk.com 是动态 API 服务，支持 POST。
+        # 但 fork 注入的 Gitea raw 文件端点是静态文件服务，只支持 GET（POST 返回 405）。
+        # reqwest 的 GET 请求带 .json() 只设 Content-Type 头不发 body，Gitea 正常返回内容。
+        # 两处 post 调用（主请求 + TLS fallback）都要改。
+        log_info "把版本检查 HTTP 方法 POST 改为 GET（兼容 Gitea raw 端点）..."
+        local post_count=$(grep -c 'client\.post(&url)' "$common_rs" 2>/dev/null || echo 0)
+        if [[ "$post_count" -gt 0 ]]; then
+            $sed_cmd 's|client\.post(&url)|client.get(\&url)|g' "$common_rs"
+            local get_count=$(grep -c 'client\.get(&url)' "$common_rs" 2>/dev/null || echo 0)
+            log_info "✅ 已将 ${post_count} 处 client.post(&url) 改为 client.get(&url)"
+        else
+            log_warn "未找到 client.post(&url)（可能已改或上游重构），跳过"
+        fi
     else
         log_error "未找到 $common_rs"
     fi
