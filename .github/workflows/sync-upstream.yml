@@ -423,6 +423,15 @@ jobs:
           # 可 push 含 .github/workflows/ 改动的提交
           git push origin master
           echo "✅ 已 push（用 BOT_TOKEN，含上游 workflow 改动）"
+          # 在 fork 仓库打 tag，供 build-and-publish 的 git-ref checkout 使用。
+          # 不打 tag 则 workflow_dispatch tag=1.4.8 时 actions/checkout ref:1.4.8 找不到。
+          if ! git rev-parse "${TARGET_TAG}" >/dev/null 2>&1; then
+            git tag "${TARGET_TAG}"
+            git push origin "${TARGET_TAG}"
+            echo "✅ 已打 tag ${TARGET_TAG} 并推送"
+          else
+            echo "tag ${TARGET_TAG} 已存在，跳过"
+          fi
 
       # --- 通知 ---
       - name: Notify on merge conflict
