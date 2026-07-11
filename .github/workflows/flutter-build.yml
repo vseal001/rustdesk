@@ -9,6 +9,13 @@ on:
       upload-tag:
         type: string
         default: "nightly"
+      # git-ref：指定 checkout 的 git ref（tag/分支）。
+      # 非空（如 "1.4.5"）→ checkout 该 tag 的源码编译，VERSION 自然是该 tag 的版本。
+      # 空 → checkout 触发 workflow 的默认 ref（master），向后兼容。
+      # 场景：手动 workflow_dispatch 指定 tag=1.4.5 → 传 git-ref=1.4.5。
+      git-ref:
+        type: string
+        default: ""
 
 # NOTE: F-Droid builder script 'flutter/build_fdroid.sh' reads environment
 # variables from this workflow!
@@ -35,6 +42,9 @@ env:
   # for arm64 linux because official Dart SDK does not work
   FLUTTER_ELINUX_VERSION: "3.16.9"
   TAG_NAME: "${{ inputs.upload-tag }}"
+  # VERSION 动态跟随 upload-tag：产物文件名用此值（如 rustdesk-<ver>-x86_64.exe）。
+  # 避免 sync 未 bump 时产物文件名停留在旧版本号。
+  VERSION: "${{ inputs.upload-tag }}"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   # vcpkg version: 2025.08.27
   # If we change the `VCPKG COMMIT_ID`, please remember:
@@ -51,10 +61,18 @@ env:
   MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
+  SKIP_SIGN: 1
+  # git-ref 用于按 tag checkout 编译（如 1.4.5）。非空时各 job checkout 该 tag，
+  # 并在 checkout 后从 master 恢复 fork 注入脚本（tag 的 commit 不含这些脚本）。
+  GIT_REF: "${{ inputs.git-ref }}"
 
 jobs:
   generate-bridge:
+    # 传 git-ref：bridge 生成的桥接文件必须与 build 编译的源码版本一致。
+    # 否则 master 的 Dart 生成的 bridge_generated.rs 引用了 tag 源码里没有的函数。
     uses: ./.github/workflows/bridge.yml
+    with:
+      git-ref: ${{ inputs.git-ref }}
 
   build-RustDeskTempTopMostWindow:
     uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml
@@ -107,19 +125,65 @@ jobs:
             }
     steps:
       - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
+          
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # Key
+          sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs   
 
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
+          
       - name: Restore bridge files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           # arm64 is on Flutter 3.44, so it needs the bridge generated with the same Flutter
           # (its *.freezed.dart must match the freezed the arm64 build resolves). x64 and every
@@ -207,18 +271,18 @@ jobs:
         run: bash .github/patches/apply_flutter_3.44_source_patches.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.SCITER_RUST_VERSION }}
           targets: ${{ matrix.job.target }}
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: ${{ matrix.job.os }}
 
       - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: C:\vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
@@ -309,7 +373,7 @@ jobs:
           fi
 
       - name: Download RustDeskTempTopMostWindow artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         if: ${{ inputs.upload-artifact }}
         with:
           name: ${{ matrix.job.arch == 'aarch64' && 'topmostwindow-artifacts-ARM64' || 'topmostwindow-artifacts-x64' }}
@@ -317,17 +381,16 @@ jobs:
 
       - name: Upload unsigned
         if: env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@master
         with:
           name: rustdesk-unsigned-windows-${{ matrix.job.arch }}
           path: rustdesk
 
-      - name: Sign rustdesk files
-        if: env.UPLOAD_ARTIFACT == 'true' && env.SIGN_BASE_URL != '-2'
-        shell: bash
+      - name: Self-signed rustdesk files
+        if: env.UPLOAD_ARTIFACT == 'true'
+        shell: pwsh
         run: |
-          pip3 install requests argparse
-          BASE_URL=${{ env.SIGN_BASE_URL }} SECRET_KEY=${{ secrets.SIGN_SECRET_KEY }} python3 res/job.py sign_files ./rustdesk/
+          .\.github\scripts\sign-self-signed.ps1 -Dir .\rustdesk -Subject "${{ secrets.NEW_SIMPLE_NAME }}"
 
       - name: Build self-extracted executable
         shell: bash
@@ -342,7 +405,7 @@ jobs:
           mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.exe
 
       - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+        uses: microsoft/setup-msbuild@v2
 
       - name: Build msi
         # Builds the MSI for the matrix arch. res/msi (WiX v4 + native CustomActions) carries
@@ -359,17 +422,17 @@ jobs:
           mv $msi.FullName ../../SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.msi
           sha256sum ../../SignOutput/rustdesk-*.msi
 
-      - name: Sign rustdesk self-extracted file
-        if: env.UPLOAD_ARTIFACT == 'true' && env.SIGN_BASE_URL != '-2'
-        shell: bash
-        run: |
-          BASE_URL=${{ env.SIGN_BASE_URL }} SECRET_KEY=${{ secrets.SIGN_SECRET_KEY }} python3 res/job.py sign_files ./SignOutput
-
-      - name: Publish Release
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+      - name: Self-signed SignOutput
         if: env.UPLOAD_ARTIFACT == 'true'
+        shell: pwsh
+        run: |
+          .\.github\scripts\sign-self-signed.ps1 -Dir .\SignOutput -Subject "${{ secrets.NEW_SIMPLE_NAME }}"
+
+      - name: Publish Release (draft, private)
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             ./SignOutput/rustdesk-*.msi
@@ -396,35 +459,82 @@ jobs:
           # - { target: aarch64-pc-windows-msvc, os: windows-2022 }
     steps:
       - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # Key
+          sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
+
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
+          
       - name: Install LLVM and Clang
-        uses: rustdesk-org/install-llvm-action-32bit@6aa7d9ad3df84dff01cd4596dd0fc880a7f47fce # no release tag; commit 2026-05-26
+        uses: rustdesk-org/install-llvm-action-32bit@master
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly-2023-10-13-${{ matrix.job.target }} # must use nightly here, because of abi_thiscall feature required
           targets: ${{ matrix.job.target }}
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: ${{ matrix.job.os }}-sciter
 
       - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: C:\vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
@@ -457,8 +567,7 @@ jobs:
           python3 res/inline-sciter.py
           # Patch sciter x86
           sed -i 's/branch = "dyn"/branch = "dyn_x86"/g' ./Cargo.toml
-          cargo update -p sciter-rs --precise 674e07d3066ca9a92ced3816203ab6b652629d1e
-          cargo build --locked --features inline,vram,hwcodec --release --bins
+          cargo build --features inline,vram,hwcodec --release --bins
           mkdir -p ./Release
           mv ./target/release/rustdesk.exe ./Release/rustdesk.exe
           curl -LJ -o ./Release/sciter.dll https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x32/sciter.dll
@@ -489,17 +598,16 @@ jobs:
 
       - name: Upload unsigned
         if: env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@master
         with:
           name: rustdesk-unsigned-windows-${{ matrix.job.arch }}
           path: Release
 
-      - name: Sign rustdesk files
-        if: env.UPLOAD_ARTIFACT == 'true' && env.SIGN_BASE_URL != '-2'
-        shell: bash
+      - name: Self-signed Release files
+        if: env.UPLOAD_ARTIFACT == 'true'
+        shell: pwsh
         run: |
-          pip3 install requests argparse
-          BASE_URL=${{ env.SIGN_BASE_URL }} SECRET_KEY=${{ secrets.SIGN_SECRET_KEY }} python3 res/job.py sign_files ./Release/
+          .\.github\scripts\sign-self-signed.ps1 -Dir .\Release -Subject "${{ secrets.NEW_SIMPLE_NAME }}"
 
       - name: Build self-extracted executable
         shell: bash
@@ -512,17 +620,17 @@ jobs:
           mkdir -p ./SignOutput
           mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}-sciter.exe
 
-      - name: Sign rustdesk self-extracted file
-        if: env.UPLOAD_ARTIFACT == 'true' && env.SIGN_BASE_URL != '-2'
-        shell: bash
-        run: |
-          BASE_URL=${{ env.SIGN_BASE_URL }} SECRET_KEY=${{ secrets.SIGN_SECRET_KEY }} python3 res/job.py sign_files ./SignOutput/
-
-      - name: Publish Release
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+      - name: Self-signed SignOutput
         if: env.UPLOAD_ARTIFACT == 'true'
+        shell: pwsh
+        run: |
+          .\.github\scripts\sign-self-signed.ps1 -Dir .\SignOutput -Subject "${{ secrets.NEW_SIMPLE_NAME }}"
+
+      - name: Publish Release (draft, private)
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             ./SignOutput/rustdesk-*.exe
@@ -544,7 +652,7 @@ jobs:
             }
     steps:
       - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -554,12 +662,62 @@ jobs:
         run: |
           brew install nasm yasm
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i.bak '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          rm -f $WORKSPACE/libs/hbb_common/src/config.rs.bak
+          # 替换Key
+          sed -i.bak '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          rm -f $WORKSPACE/libs/hbb_common/src/config.rs.bak
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i.bak "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
+          rm -f $WORKSPACE/src/common.rs.bak 
+ 
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
+
       - name: Install flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -570,7 +728,7 @@ jobs:
           [[ "3.24.5" == ${{env.FLUTTER_VERSION}} ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
 
       - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
@@ -594,19 +752,19 @@ jobs:
         shell: bash
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.job.target }}
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: rustdesk-lib-cache-ios
           key: ${{ matrix.job.target }}
 
       - name: Restore bridge files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: bridge-artifact
           path: ./
@@ -614,10 +772,10 @@ jobs:
       - name: Build rustdesk lib
         run: |
           rustup target add ${{ matrix.job.target }}
-          cargo build --locked --features flutter,hwcodec --release --target aarch64-apple-ios --lib
+          cargo build --features flutter,hwcodec --release --target aarch64-apple-ios --lib
           
       - name: Upload liblibrustdesk.a Artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@master
         with:
           name: liblibrustdesk.a
           path: target/aarch64-apple-ios/release/liblibrustdesk.a
@@ -632,14 +790,14 @@ jobs:
 
       # - name: Upload Artifacts
       #   # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-      #   uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      #   uses: actions/upload-artifact@master
       #   with:
       #     name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
       #     path: flutter/build/ios/ipa/*.ipa
 
       # - name: Publish ipa package
       #   # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-      #   uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+      #   uses: softprops/action-gh-release@v1
       #   with:
       #     prerelease: true
       #     tag_name: ${{ env.TAG_NAME }}
@@ -672,20 +830,70 @@ jobs:
             }
     steps:
       - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
+
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i.bak '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          rm -f $WORKSPACE/libs/hbb_common/src/config.rs.bak
+          # 替换Key
+          sed -i.bak '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          rm -f $WORKSPACE/libs/hbb_common/src/config.rs.bak
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i.bak "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs
+          rm -f $WORKSPACE/src/common.rs.bak  
+
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
 
       - name: Import the codesign cert
         if: env.MACOS_P12_BASE64 != null
-        uses: apple-actions/import-codesign-certs@253ddeeac23f2bdad1646faac5c8c2832e800071 # v1
+        uses: apple-actions/import-codesign-certs@v1
         with:
           p12-file-base64: ${{ secrets.MACOS_P12_BASE64 }}
           p12-password: ${{ secrets.MACOS_P12_PASSWORD }}
@@ -699,7 +907,7 @@ jobs:
 
       - name: Import notarize key
         if: env.MACOS_P12_BASE64 != null
-        uses: timheuer/base64-to-file@adaa40c0c581f276132199d4cf60afa07ce60eac # v1.2
+        uses: timheuer/base64-to-file@v1.2
         with:
           # https://gregoryszorc.com/docs/apple-codesign/stable/apple_codesign_rcodesign.html#notarizing-and-stapling
           fileName: rustdesk.json
@@ -738,7 +946,7 @@ jobs:
           nasm --version
 
       - name: Install flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -757,24 +965,24 @@ jobs:
           grep -n '_setFramesEnabledState(false);' ../packages/flutter/lib/src/scheduler/binding.dart
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.MAC_RUST_VERSION }}
           targets: ${{ matrix.job.target }}
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: ${{ matrix.job.os }}
 
       - name: Restore bridge files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: bridge-artifact
           path: ./
 
       - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
@@ -826,7 +1034,7 @@ jobs:
 
       - name: Upload unsigned macOS app
         if: env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@master
         with:
           name: rustdesk-unsigned-macos-${{ matrix.job.arch }}
           path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg # can not upload the directory directly or tar.gz, which destroy the link structure, causing the codesign failed
@@ -858,9 +1066,9 @@ jobs:
 
       - name: Publish DMG package
         if: env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             rustdesk*-${{ matrix.job.arch }}.dmg
@@ -874,25 +1082,25 @@ jobs:
     if: ${{ inputs.upload-artifact }}
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: rustdesk-unsigned-macos-x86_64
           path: ./
 
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: rustdesk-unsigned-macos-aarch64
           path: ./
 
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: rustdesk-unsigned-windows-x86_64
           path: ./windows-x86_64/
 
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: rustdesk-unsigned-windows-x86
           path: ./windows-x86/
@@ -902,9 +1110,9 @@ jobs:
           tar czf rustdesk-${{ env.VERSION }}-unsigned.tar.gz *.dmg windows-x86_64 windows-x86
 
       - name: Publish unsigned app
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: rustdesk-${{ env.VERSION }}-unsigned.tar.gz
 
@@ -939,7 +1147,7 @@ jobs:
             }
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: false
           android: false
@@ -950,7 +1158,7 @@ jobs:
           swap-storage: false
 
       - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -992,12 +1200,59 @@ jobs:
                wget
 
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # Key
+          sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
+
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
+
       - name: Install flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
@@ -1007,14 +1262,14 @@ jobs:
           cd $(dirname $(dirname $(which flutter)))
           [[ "3.24.5" == ${{env.ANDROID_FLUTTER_VERSION}} ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
 
-      - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
+      - uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: true
 
       - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: /opt/artifacts/vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
@@ -1049,18 +1304,18 @@ jobs:
         shell: bash
 
       - name: Restore bridge files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: bridge-artifact
           path: ./
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: rustdesk-lib-cache-android # TODO: drop '-android' part after caches are invalidated
           key: ${{ matrix.job.target }}
@@ -1096,7 +1351,7 @@ jobs:
           esac
 
       - name: Upload Rustdesk library to Artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@master
         with:
           name: librustdesk.so.${{ matrix.job.target }}
           path: ./target/${{ matrix.job.target }}/release/liblibrustdesk.so
@@ -1161,7 +1416,7 @@ jobs:
           echo "ANDROID_SIGN_TOOL_VERSION=$BUILD_TOOL_VERSION" >> $GITHUB_ENV
           echo Last build tool version is: $BUILD_TOOL_VERSION
 
-      - uses: r0adkll/sign-android-release@349ebdef58775b1e0d8099458af0816dc79b6407 # v1
+      - uses: r0adkll/sign-android-release@v1
         name: Sign app APK
         if: env.ANDROID_SIGNING_KEY != null
         id: sign-rustdesk
@@ -1177,25 +1432,25 @@ jobs:
 
       - name: Upload Artifacts
         if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@master
         with:
           name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
           path: ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
 
       - name: Publish signed apk package
         if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
 
       - name: Publish unsigned apk package
         if: env.ANDROID_SIGNING_KEY == null && env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             signed-apk/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
@@ -1211,7 +1466,7 @@ jobs:
       suffix: ""
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: false
           android: false
@@ -1222,7 +1477,7 @@ jobs:
           swap-storage: false
 
       - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -1264,12 +1519,59 @@ jobs:
                wget
 
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # Key
+          sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
+
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
+
       - name: Install flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
@@ -1280,32 +1582,32 @@ jobs:
           [[ "3.24.5" == ${{env.ANDROID_FLUTTER_VERSION}} ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
 
       - name: Restore bridge files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: bridge-artifact
           path: ./
 
       - name: Download Rustdesk library from Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: librustdesk.so.aarch64-linux-android
           path: ./flutter/android/app/src/main/jniLibs/arm64-v8a
 
       - name: Download Rustdesk library from Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: librustdesk.so.armv7-linux-androideabi
           path: ./flutter/android/app/src/main/jniLibs/armeabi-v7a
 
       - name: Download Rustdesk library from Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: librustdesk.so.x86_64-linux-android
           path: ./flutter/android/app/src/main/jniLibs/x86_64
 
       - name: Download Rustdesk library from Artifacts
         if: ${{ env.reltype == 'debug' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: librustdesk.so.i686-linux-android
           path: ./flutter/android/app/src/main/jniLibs/x86
@@ -1345,7 +1647,7 @@ jobs:
           echo "ANDROID_SIGN_TOOL_VERSION=$BUILD_TOOL_VERSION" >> $GITHUB_ENV
           echo Last build tool version is: $BUILD_TOOL_VERSION
 
-      - uses: r0adkll/sign-android-release@349ebdef58775b1e0d8099458af0816dc79b6407 # v1
+      - uses: r0adkll/sign-android-release@v1
         name: Sign app APK
         if: env.ANDROID_SIGNING_KEY != null
         id: sign-rustdesk
@@ -1361,25 +1663,25 @@ jobs:
 
       - name: Upload Artifacts
         if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@master
         with:
           name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
           path: ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
 
       - name: Publish signed apk package
         if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
 
       - name: Publish unsigned apk package
         if: env.ANDROID_SIGNING_KEY == null && env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             signed-apk/rustdesk-${{ env.VERSION }}-universal${{ env.suffix }}.apk
@@ -1411,7 +1713,7 @@ jobs:
             }
     steps:
       - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -1429,13 +1731,62 @@ jobs:
           fi
 
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
+
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # Key
+          sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs 
+          # 同步 Cargo.toml version 为构建版本（build.py 读它生成 deb/rpm 文件名，须与 env.VERSION 一致）
+          sed -i -E 's|^version = ".*"|version = "'"$VERSION"'"|' $WORKSPACE/Cargo.toml
+
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
 
       - name: Set Swap Space
         if: ${{ matrix.job.arch == 'x86_64' }}
-        uses: pierotofy/set-swap-space@49819abfb41bd9b44fb781159c033dba90353a7c # v1.0
+        uses: pierotofy/set-swap-space@master
         with:
           swap-size-gb: 12
 
@@ -1445,7 +1796,7 @@ jobs:
           free -m
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@v1
         if: matrix.job.arch == 'x86_64' || env.UPLOAD_ARTIFACT == 'true'
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -1464,14 +1815,14 @@ jobs:
 
       - name: Restore bridge files
         if: matrix.job.arch == 'x86_64' || env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: bridge-artifact
           path: ./
 
       - name: Setup vcpkg with Github Actions binary cache
         if: matrix.job.arch == 'x86_64' || env.UPLOAD_ARTIFACT == 'true'
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: /opt/artifacts/vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
@@ -1499,12 +1850,12 @@ jobs:
 
       - name: Restore bridge files
         if: matrix.job.arch == 'x86_64' || env.UPLOAD_ARTIFACT == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: bridge-artifact
           path: ./
 
-      - uses: rustdesk-org/run-on-arch-action@d3fcfbb632b84cf7f6bc772bfaaa2c2f4f8789a8 # no release tag; commit 2026-05-26
+      - uses: rustdesk-org/run-on-arch-action@amd64-support
         name: Build rustdesk
         id: vcpkg
         if: matrix.job.arch == 'x86_64' || env.UPLOAD_ARTIFACT == 'true'
@@ -1586,7 +1937,7 @@ jobs:
               export JOBS=""
             fi
             echo $JOBS
-            cargo build --locked --lib $JOBS --features hwcodec,flutter,unix-file-copy-paste --release
+            cargo build --lib $JOBS --features hwcodec,flutter,unix-file-copy-paste --release
             rm -rf target/release/deps target/release/build
             rm -rf ~/.cargo
 
@@ -1678,16 +2029,16 @@ jobs:
 
       - name: Publish debian/rpm package
         if: env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             rustdesk-*.deb
             rustdesk-*.rpm
 
       - name: Upload deb
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@master
         if: env.UPLOAD_ARTIFACT == 'true'
         with:
           name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.deb
@@ -1706,7 +2057,7 @@ jobs:
 
       - name: Build archlinux package
         if: matrix.job.arch == 'x86_64' && env.UPLOAD_ARTIFACT == 'true'
-        uses: rustdesk-org/arch-makepkg-action@04200739ed1d0bf6f2188b6736b26a767c57a7f9 # no release tag; commit 2026-05-26
+        uses: rustdesk-org/arch-makepkg-action@master
         with:
           packages:
           scripts: |
@@ -1714,9 +2065,9 @@ jobs:
 
       - name: Publish archlinux package
         if: matrix.job.arch == 'x86_64' && env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             res/rustdesk-${{ env.VERSION }}*.zst
@@ -1752,16 +2103,65 @@ jobs:
             }
     steps:
       - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
+
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # Key
+          sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
+          # 同步 Cargo.toml version 为构建版本（build.py 读它生成 deb/rpm 文件名，须与 env.VERSION 一致）
+          sed -i -E 's|^version = ".*"|version = "'"$VERSION"'"|' $WORKSPACE/Cargo.toml
+
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"   
 
       - name: Modify vcpkg.json for armv7
         if: matrix.job.vcpkg-triplet == 'arm-linux'
@@ -1777,7 +2177,7 @@ jobs:
           free -m
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.SCITER_RUST_VERSION }}
           targets: ${{ matrix.job.target }}
@@ -1788,7 +2188,7 @@ jobs:
           RUST_TOOLCHAIN_VERSION=$(cargo --version | awk '{print $2}')
           echo "RUST_TOOLCHAIN_VERSION=$RUST_TOOLCHAIN_VERSION" >> $GITHUB_ENV
 
-      - uses: rustdesk-org/run-on-arch-action@d3fcfbb632b84cf7f6bc772bfaaa2c2f4f8789a8 # no release tag; commit 2026-05-26
+      - uses: rustdesk-org/run-on-arch-action@amd64-support
         name: Build rustdesk sciter binary for ${{ matrix.job.arch }}
         id: vcpkg
         with:
@@ -1916,7 +2316,7 @@ jobs:
             # build rustdesk
             python3 ./res/inline-sciter.py
             export CARGO_INCREMENTAL=0
-            cargo build --locked --features inline${{ matrix.job.extra_features }} --release --bins --jobs 1
+            cargo build --features inline${{ matrix.job.extra_features }} --release --bins --jobs 1
             # make debian package
             mkdir -p ./Release
             mv ./target/release/rustdesk ./Release/rustdesk
@@ -1934,15 +2334,15 @@ jobs:
 
       - name: Publish debian package
         if: env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}-sciter.deb
 
       - name: Upload deb
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@master
         if: env.UPLOAD_ARTIFACT == 'true'
         with:
           name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}-sciter.deb
@@ -1961,12 +2361,59 @@ jobs:
           - { target: aarch64-unknown-linux-gnu, arch: aarch64 }
     steps:
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # Key
+          sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
+
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"   
+
       - name: Download Binary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.deb
           path: .
@@ -1982,6 +2429,10 @@ jobs:
           sudo apt-get update -y
           # https://github.com/AppImage/AppImageKit/wiki/FUSE
           sudo apt-get install -y libarchive-tools libfuse2
+          # pin setuptools_scm 到兼容版本：appimage-builder 的 setup.py 依赖
+          # ignore_egg_info_in_manifest 属性，该属性在 setuptools_scm>=9 被移除，
+          # 导致 egg_info 阶段 AttributeError。先降级再装 appimage-builder。
+          sudo pip3 install "setuptools_scm==7.1.0"
           # set-up appimage-builder
           # https://github.com/AppImage/AppImageKit/issues/1395
           sudo pip3 install git+https://github.com/rustdesk-org/appimage-builder.git
@@ -1991,9 +2442,9 @@ jobs:
 
       - name: Publish appimage package
         if: env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             ./appimage/rustdesk-${{ env.VERSION }}-*.AppImage
@@ -2034,12 +2485,59 @@ jobs:
             }
     steps:
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
 
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # Key
+          sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
+
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"  
+
       - name: Download Binary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@master
         with:
           name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.deb
           path: .
@@ -2048,7 +2546,7 @@ jobs:
         run: |
           mv rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.deb flatpak/rustdesk.deb
 
-      - uses: rustdesk-org/run-on-arch-action@d3fcfbb632b84cf7f6bc772bfaaa2c2f4f8789a8 # no release tag; commit 2026-05-26
+      - uses: rustdesk-org/run-on-arch-action@amd64-support
         name: Build rustdesk flatpak package for ${{ matrix.job.arch }}
         id: flatpak
         with:
@@ -2061,6 +2559,8 @@ jobs:
             --volume "${PWD}:/workspace"
           shell: /bin/bash
           install: |
+            sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
+            sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list          
             apt-get update -y
             apt-get install -y git flatpak flatpak-builder
           run: |
@@ -2076,15 +2576,15 @@ jobs:
             flatpak build-bundle ./repo rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.flatpak com.rustdesk.RustDesk
 
       - name: Publish flatpak package
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             flatpak/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.flatpak
 
   build-rustdesk-web:
-    if: False
+    if: false
     name: build-rustdesk-web
     runs-on: ubuntu-22.04
     permissions:
@@ -2095,9 +2595,56 @@ jobs:
       RELEASE_NAME: web-basic
     steps:
       - name: Checkout source code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
+          # git-ref 非空 → checkout 指定 tag（如 1.4.5），VERSION 自然是该 tag 版本。
+          # git-ref 空 → 用默认 ref（master），向后兼容。
+          ref: ${{ inputs.git-ref || github.ref }}
+          # 全历史：checkout tag 后需从 master 恢复 fork 注入脚本（git checkout origin/master --）
+          fetch-depth: 0
           submodules: recursive
+
+      - name: Modify servers and keys
+        shell: bash
+        run: |
+          # checkout tag 时（GIT_REF 非空），tag 的 commit 不含 fork 注入脚本，
+          # 从 origin/master 恢复 .github/scripts/ 下的所有脚本。
+          if [[ -n "${GIT_REF:-}" ]]; then
+            git fetch origin master --depth=1 2>/dev/null || true
+            git checkout origin/master -- .github/scripts/ 2>/dev/null || true
+            chmod +x .github/scripts/*.sh 2>/dev/null || true
+            echo "已从 master 恢复 fork 注入脚本（GIT_REF=${GIT_REF}）"
+          fi
+          WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+          # 替换 ID服务器
+          sed -i '/RENDEZVOUS_SERVERS.*rs-ny\.rustdesk\.com/s/rs-ny\.rustdesk\.com/${{ secrets.CUSTOM_RENDEZVOUS_SERVERS }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # Key
+          sed -i '/RS_PUB_KEY/s/OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=/${{ secrets.CUSTOM_RS_PUB_KEY }}/' $WORKSPACE/libs/hbb_common/src/config.rs
+          # 注入自建 Gitea 更新源（lib.rs 端点 + 解除 is_custom_client 阻断）
+          # 源文件保持上游原版，由 replace-update-source.sh 在构建时注入。
+          # 确保 chmod +x（actions/checkout 不保留可执行位）
+          chmod +x .github/scripts/replace-update-source.sh
+          .github/scripts/replace-update-source.sh "$WORKSPACE" "${{ secrets.UPDATE_JSON_URL }}"
+          # 替换 API 服务器
+          sed -i "s|https://admin.rustdesk.com|${{ secrets.CUSTOM_API_SERVER }}|g" $WORKSPACE/src/common.rs  
+
+          
+      - name: Replace package names and identifiers (using script)
+        shell: bash
+        env:
+          RUNNER_OS: ${{ runner.os }}  # 传递运行器信息给脚本
+        run: |
+          # 确保脚本有执行权限
+          chmod +x .github/scripts/replace-package-names.sh
+          
+          # 执行脚本
+          ./.github/scripts/replace-package-names.sh \
+            "${{ github.workspace }}" \
+            "${{ secrets.NEW_FLUTTER_PACKAGE }}" \
+            "${{ secrets.NEW_BUNDLE_ID }}" \
+            "${{ secrets.NEW_BUNDLE_ID_PASCAL }}" \
+            "${{ secrets.NEW_SERVICE_BUNDLE_ID }}" \
+            "${{ secrets.NEW_SIMPLE_NAME }}"       
 
       - name: Prepare env
         run: |
@@ -2105,7 +2652,7 @@ jobs:
           sudo apt-get install -y wget npm
 
       - name: Install flutter
-        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225  # v2.12.0; https://github.com/subosito/flutter-action/issues/277
+        uses: subosito/flutter-action@v2.12.0 #https://github.com/subosito/flutter-action/issues/277
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -2149,9 +2696,9 @@ jobs:
 
       - name: Publish web
         if: env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@v1
         with:
-          prerelease: true
+          draft: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
             flutter/build/rustdesk-${{ env.VERSION }}-${{ env.RELEASE_NAME }}.tar.gz

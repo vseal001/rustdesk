@@ -1,0 +1,621 @@
+# 构建全平台并镜像到自建 Gitea 发布站（rustdesk_auto_update）。
+#
+# 触发（三条独立路径，互斥场景，不会重复构建）：
+#   - workflow_run：监听 "Sync Upstream Release" 成功完成（sync 直进 master、
+#     无冲突路径）。独立于 sync workflow 内部逻辑，解耦可靠。
+#   - pull_request：当 base=master 的 PR 被合并(closed+merged)时触发
+#     （sync 冲突 PR 人工解决后合并的路径——此时 sync workflow 不再运行，
+#      workflow_run 不会触发，需此触发器补上自动构建）。
+#   - workflow_dispatch：可手动触发（可指定 TAG）。
+#
+# 流程：
+#   1. 读 .github/latest-synced-tag 作为 TAG_NAME。
+#   2. 复用 flutter-build.yml 全平台构建（构建时由 replace-update-source.sh
+#      注入更新源，lib.rs/common.rs 保持上游原版），产物发布到本仓库 GitHub Release。
+#   3. mirror-to-gitea job：从 GitHub Release 拉资产，经 Gitea API 上传到
+#      rustdesk_auto_update 的 release。
+#   4. publish-latest-json：在 Gitea 仓库根写入 latest.json（兼容上游
+#      VersionCheckResponse 的 {"url":.../tag/<ver>} 格式），客户端注入的
+#      版本检查端点即指向该文件的 raw URL。
+#
+# 需要在 GitHub Secrets 配置（Gitea 站点地址全部走 secret，不在 workflow 硬编码）：
+#   GITEA_API_URL  = https://xxx.com   （Gitea 站点根地址）
+#   GITEA_REPO     = xxx/xxx （owner/repo）
+#   GITEA_TOKEN    = Gitea 用户访问令牌（read/write）
+name: Build and Publish to Gitea
+
+on:
+  workflow_run:
+    # sync-upstream.yml 成功后被动触发（sync 直进 master、无冲突路径）。
+    # 独立于 sync workflow 内部逻辑：只要 "Sync Upstream Release" 成功完成就触发，
+    # 不依赖 sync 是否有 trigger-build job，解耦更彻底、更可靠。
+    # guard job 会过滤：仅 conclusion == success 才继续。
+    workflows: ["Sync Upstream Release"]
+    types:
+      - completed
+    branches:
+      - master
+  pull_request:
+    # 冲突 PR 合并进 master 时触发构建（sync 冲突解决路径）。
+    # 三触发器互斥：sync 直进 master 走 workflow_run；冲突 PR 合并走 pull_request；
+    # 手动走 workflow_dispatch。不会重复触发同一构建。
+    # guard job 会过滤：仅 closed 且 merged 的 PR 才继续。
+    types:
+      - closed
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建/发布的标签（如 1.4.8）；填 latest 或留空则用最近同步的版本"
+        required: false
+        default: "latest"
+      skip_build:
+        description: "跳过编译步骤（仅验证 push/镜像/release 功能，用已有的 release 资产）"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  GITHUB_REPO_FULL: "${{ github.repository }}"
+
+jobs:
+  guard:
+    runs-on: ubuntu-22.04
+    # 触发闸门（三触发器互斥，不会重复构建）：
+    #   - workflow_run：仅当上游 sync 成功完成（conclusion==success，排除 failure/cancelled）
+    #   - pull_request：仅当 base=master 的 PR 被合并（merged=true）；仅关闭未合并则跳过
+    #   - workflow_dispatch：手动触发直接通过
+    if: >-
+      ${{ 
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+        || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+        || github.event_name == 'workflow_dispatch'
+      }}
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      skip: ${{ steps.tag.outputs.skip }}
+      # tag_source: explicit（用户传了具体 tag）→ build 用该 tag checkout 编译
+      #             latest（读 latest-synced-tag 或 PR 合并）→ build 用 master
+      tag_source: ${{ steps.tag.outputs.tag_source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Resolve TAG & decide whether to build
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # 输入 latest 或留空 -> 读最近同步的版本；否则用指定 tag
+          # pull_request 事件无 inputs，走 latest 分支读 latest-synced-tag
+          TAG_SOURCE="latest"
+          if [[ -n "${INPUT_TAG}" && "${INPUT_TAG}" != "latest" ]]; then
+            TAG="${INPUT_TAG}"
+            TAG_SOURCE="explicit"
+          elif [[ -f .github/latest-synced-tag ]]; then
+            TAG=$(tr -d '[:space:]' < .github/latest-synced-tag)
+          fi
+          if [[ -z "${TAG}" ]]; then
+            echo "::error::未能确定构建标签（指定 tag、或先运行 sync 同步以生成 .github/latest-synced-tag）"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "tag_source=${TAG_SOURCE}" >> "$GITHUB_OUTPUT"
+          echo "触发事件: ${EVENT_NAME}，构建/发布标签: ${TAG}（来源: ${TAG_SOURCE}）"
+
+          # 去重判断：仅 workflow_run（sync 自动触发）才判断是否需要构建。
+          # workflow_dispatch（手动）和 pull_request（PR 合并，本身就是代码变更）
+          # 强制构建，不受去重影响 —— 保证手动重跑同一版本永远可用。
+          SKIP="false"
+          if [[ "${EVENT_NAME}" == "workflow_run" ]]; then
+            BUILT=""
+            if [[ -f .github/latest-built-tag ]]; then
+              BUILT=$(tr -d '[:space:]' < .github/latest-built-tag)
+            fi
+            echo "上次已构建版本: '${BUILT}'，本次目标: '${TAG}'"
+            if [[ "${BUILT}" == "${TAG}" ]]; then
+              SKIP="true"
+              echo "→ sync 无源码更新（latest-built-tag == latest-synced-tag == ${TAG}），跳过本次自动构建"
+              echo "（如需强制构建，请手动 workflow_dispatch 触发）"
+            fi
+          fi
+          echo "skip=${SKIP}" >> "$GITHUB_OUTPUT"
+
+  # 在 build 之前彻底删除该 TAG 的 GitHub release 及其 tag。
+  # softprops/action-gh-release 默认追加模式会累积多版本产物（如 1.4.5 残留混进 1.4.6），
+  # 逐个删产物不彻底；直接删除整个 release（+ tag）最干净，build 时会重建全新 release。
+  # skip_build 时跳过清理（用已有 release 资产验证镜像功能）。
+  clean-release:
+    needs: guard
+    # guard 判定跳过（sync 无更新）或 skip_build 时不清理
+    if: ${{ needs.guard.outputs.skip != 'true' && github.event.inputs.skip_build != 'true' }}
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ needs.guard.outputs.tag }}
+    steps:
+      - name: Delete existing GitHub release and tag for clean rebuild
+        run: |
+          set -uo pipefail
+          GH_API="https://api.github.com/repos/${GITHUB_REPO_FULL}"
+          GH_AUTH=(-H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json")
+
+          # 1. 找到该 TAG 的 release（draft 也能列出）并删除整个 release
+          REL=$(curl -fsSL "${GH_AUTH[@]}" "${GH_API}/releases?per_page=100" \
+            | jq --arg t "${TAG}" '[.[] | select(.tag_name==$t)] | .[0]')
+          REL_ID=$(echo "${REL}" | jq -r '.id // empty')
+          if [[ -n "${REL_ID}" && "${REL_ID}" != "null" ]]; then
+            echo "删除 GitHub release ${TAG}(id=${REL_ID})..."
+            curl -fsSL "${GH_AUTH[@]}" -X DELETE "${GH_API}/releases/${REL_ID}" || true
+            echo "✅ release 已删除"
+          else
+            echo "未找到 GitHub release ${TAG}（首次构建，无需清理）"
+          fi
+
+          # 2. 删除该 tag（若存在），让 build 时 softprops 重建全新 release + tag。
+          #    注意：tag 不存在时 GitHub 返回 404，curl -f 会转成 exit 22。
+          #    用 -sS（不带 -f）+ HTTP 码判断，404 视为正常（首次构建无 tag）。
+          HTTP=$(curl -sS -o /dev/null -w "%{http_code}" "${GH_AUTH[@]}" "${GH_API}/git/ref/tags/${TAG}" || true)
+          if [[ "${HTTP}" == "200" ]]; then
+            echo "删除 tag ${TAG}..."
+            curl -fsSL "${GH_AUTH[@]}" -X DELETE "${GH_API}/git/ref/tags/${TAG}" || true
+            echo "✅ tag 已删除"
+          else
+            echo "tag ${TAG} 不存在（HTTP ${HTTP}），跳过"
+          fi
+          echo "✅ 清理完成，build 将创建全新的 release"
+
+  build:
+    needs: [guard, clean-release]
+    # guard 判定跳过（sync 无更新）或 skip_build 时不构建
+    if: ${{ needs.guard.outputs.skip != 'true' && github.event.inputs.skip_build != 'true' }}
+    uses: ./.github/workflows/flutter-build.yml
+    secrets: inherit
+    with:
+      upload-artifact: true
+      upload-tag: ${{ needs.guard.outputs.tag }}
+      # tag_source=explicit（用户传了具体 tag 如 1.4.5）→ 传 git-ref 让 flutter-build
+      # checkout 该 tag 源码编译，VERSION 自然是该 tag 版本（避免文件名/内部版本错位）。
+      # tag_source=latest → git-ref 空，用 master（fork 最新，含所有自定义）。
+      git-ref: ${{ needs.guard.outputs.tag_source == 'explicit' && needs.guard.outputs.tag || '' }}
+
+  mirror-to-gitea:
+    # 两种场景运行：
+    #   1. 正常构建：guard + build 都成功（needs.build.result == 'success'）
+    #   2. skip_build 模式：跳过编译，用已有 release 资产验证镜像（build 被 skip，
+    #      此时 needs.build.result == 'skipped'，靠 inputs.skip_build 放行）
+    # guard 判定跳过（sync 无更新）时整个 mirror 不运行。
+    needs: [guard, build]
+    # 关键：必须显式 always()。GitHub Actions 对不含状态函数的 if 会叠加隐式
+    # success() 检查，而 skipped 不算 success——skip_build 模式下 build 被 skip，
+    # 隐式 success() 会抢先否决整个 if，导致 mirror 也被跳过（即使下方 OR 条件
+    # 本应放行）。加 always() 后隐式检查不再叠加，完全交给下方条件自行判定。
+    if: >-
+      ${{
+        always()
+        && needs.guard.outputs.skip != 'true'
+        && needs.guard.result == 'success'
+        && (needs.build.result == 'success' || github.event.inputs.skip_build == 'true')
+      }}
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ needs.guard.outputs.tag }}
+      GITEA_API_URL: ${{ secrets.GITEA_API_URL }}
+      GITEA_REPO: ${{ secrets.GITEA_REPO }}
+      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+      NTFY_URL: ${{ secrets.NTFY_URL }}
+      NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+      # 直连子域名（灰云，绕过 CF 100MB 限制），大文件用。留空则全部走 CF。
+      GITEA_DIRECT_URL: ${{ secrets.GITEA_DIRECT_URL }}
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v5
+        with:
+          ref: master
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Validate Gitea secrets
+        run: |
+          set -euo pipefail
+          miss=0
+          [[ -z "${GITEA_API_URL}" ]] && echo "::error::缺少 secret GITEA_API_URL" && miss=1
+          [[ -z "${GITEA_REPO}" ]]    && echo "::error::缺少 secret GITEA_REPO" && miss=1
+          [[ -z "${GITEA_TOKEN}" ]]   && echo "::error::缺少 secret GITEA_TOKEN" && miss=1
+          [[ "${miss}" == "1" ]] && exit 1
+          echo "Gitea 发布站: ${GITEA_API_URL}/${GITEA_REPO}"
+
+      - name: Mirror source code to Gitea
+        run: |
+          set -uo pipefail
+          # 增量镜像源码到 Gitea：以 Gitea 现有仓库为起点，只拉取 GitHub 新增 commit，推送增量。
+          GITEA_PUSH_URL="${GITEA_API_URL}/${GITEA_REPO}.git"
+          GH_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          # 认证 URL（token 内嵌 oauth2: 前缀）。Gitea 自签证书需 sslVerify=false。
+          AUTH_URL=$(echo "${GITEA_PUSH_URL}" | sed "s|https://|https://oauth2:${GITEA_TOKEN}@|")
+
+          # 标记敏感值：GitHub Actions 自动遮蔽日志中匹配项为 ***
+          echo "::add-mask::${GITEA_PUSH_URL}"
+          echo "::add-mask::${AUTH_URL}"
+          echo "::add-mask::${GITEA_API_URL}"
+          GITEA_HOST=$(echo "${GITEA_API_URL}" | sed 's|https://||')
+          echo "::add-mask::${GITEA_HOST}"
+          echo "::add-mask::${GITEA_TOKEN}"
+
+          rm -rf /tmp/src-mirror && mkdir -p /tmp/src-mirror
+          cd /tmp/src-mirror
+          # 包装函数：执行 git 命令，过滤 AUTH_URL/token/明文URL 为 ***，保留真实退出码
+          run_git() {
+            "$@" 2>&1 | sed -E "s|${AUTH_URL}|***(Gitea URL)***|g; s|${GITEA_PUSH_URL}|***(Gitea URL)***|g; s|${GITEA_TOKEN}|***|g"
+            return "${PIPESTATUS[0]}"
+          }
+
+          # 第一步：以 Gitea 仓库为 origin 克隆（首次为空则 init 新仓库）
+          # sslVerify=false（Gitea 自签证书）；token 内嵌 URL（经测试 extraheader 在此 Gitea 失败）
+          if run_git git -c http.sslVerify=false clone --progress --origin gitea "${AUTH_URL}" .; then
+            echo "✅ 已克隆 Gitea 现有仓库（增量模式）"
+            # remote URL 改为带 token 的（后续 push 需认证）
+            git remote set-url gitea "${AUTH_URL}"
+            git remote add github "${GH_URL}" 2>/dev/null || git remote set-url github "${GH_URL}"
+            run_git git -c http.sslVerify=false fetch --progress github master --no-tags
+            git checkout -B main github/master
+            git fetch github "refs/tags/${TAG}:refs/tags/${TAG}" --no-tags 2>/dev/null || git tag -f "${TAG}" HEAD
+          else
+            echo "Gitea 仓库为空或不可访问，首次全量初始化..."
+            git init
+            git remote add github "${GH_URL}"
+            run_git git -c http.sslVerify=false fetch --progress github master --no-tags
+            git checkout -B main github/master
+            git fetch github "refs/tags/${TAG}:refs/tags/${TAG}" --no-tags 2>/dev/null || git tag -f "${TAG}" HEAD
+            git remote add gitea "${AUTH_URL}"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 推送到 Gitea（remote 已带 token，sslVerify=false 走自签证书）
+          echo "=== 推送 main 到 Gitea ==="
+          if ! run_git git -c http.sslVerify=false push --progress --force gitea refs/heads/main:refs/heads/main; then
+            echo "force push 失败，尝试普通 push..."
+            run_git git -c http.sslVerify=false push --progress gitea refs/heads/main:refs/heads/main
+          fi
+          echo "=== 推送 tag ${TAG} ==="
+          run_git git -c http.sslVerify=false push --progress --force gitea "refs/tags/${TAG}" || echo "tag ${TAG} 推送跳过"
+
+          echo "✅ 源码增量镜像完成（Gitea main + tag ${TAG}）"
+
+      - name: Wait for GitHub Release assets to settle
+        run: |
+          set -uo pipefail
+          # GitHub Release 是 draft 状态（私有，外部不可见），
+          # /releases/tags/<tag> 对 draft 返回 404，故改用 /releases 列表 + tag_name 过滤
+          for i in $(seq 1 20); do
+            n=$(curl -fsSL \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPO_FULL}/releases?per_page=100" \
+              | jq --arg t "${TAG}" '[.[] | select(.tag_name==$t)] | .[0].assets // [] | length')
+            echo "尝试 $i: GitHub Release ${TAG}(含draft) 资产数 = ${n}"
+            if [[ "${n}" -gt 0 ]] 2>/dev/null; then exit 0; fi
+            sleep 30
+          done
+          echo "::warning::未在 GitHub Release ${TAG} 上发现资产"
+
+      - name: Fetch upstream release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 从源站 rustdesk/rustdesk 取该 tag 的 release 描述(body)
+          BODY=""
+          if gh api "repos/rustdesk/rustdesk/releases/tags/${TAG}" --jq '.body' > /tmp/upstream_body.md 2>/dev/null; then
+            BODY=$(cat /tmp/upstream_body.md)
+          fi
+          if [[ -z "${BODY}" ]]; then
+            BODY="RustDesk 自建版本 ${TAG}"
+            echo "::notice::未取到源站 release 描述，使用默认文案"
+          else
+            echo "✅ 已同步源站 release 描述（${#BODY} 字符）"
+          fi
+          # 写入文件，避免 GITHUB_OUTPUT 转义多行 markdown 的问题
+          printf '%s' "${BODY}" > /tmp/release_body.md
+
+      - name: Download assets & prepare release body
+        id: prepare
+        run: |
+          set -uo pipefail
+          GITEA_BASE="${GITEA_API_URL}/${GITEA_REPO}"
+          mkdir -p ./assets
+
+          # 1. 从 GitHub release 下载所有匹配 TAG 的资产
+          echo "=== 下载资产 ==="
+          ASSETS_JSON=$(curl -fsSL \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPO_FULL}/releases?per_page=100" \
+            | jq --arg t "${TAG}" '[.[] | select(.tag_name==$t)] | .[0]')
+          COUNT=$(echo "${ASSETS_JSON}" | jq '[.assets[]?] | length')
+          echo "待处理资产数: ${COUNT}"
+
+          > downloaded_files.txt
+          echo "${ASSETS_JSON}" | jq -c '.assets[]?' | while read -r a; do
+            NAME=$(echo "${a}" | jq -r '.name')
+            URL=$(echo "${a}" | jq -r '.url')
+            [[ -z "${NAME}" || "${NAME}" == "null" ]] && continue
+            if ! echo "${NAME}" | grep -q "rustdesk-${TAG}"; then
+              echo "==> 跳过(版本不符): ${NAME}"
+              continue
+            fi
+            echo "==> 下载: ${NAME}"
+            curl -fSL --max-time 600 --speed-time 60 --speed-limit 1024 \
+                -o "assets/${NAME}" \
+                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/octet-stream" \
+                "${URL}" 2>&1 | sed 's|https://[^ ]*|***(URL)***|g' \
+                && { echo "${NAME}" >> downloaded_files.txt; echo "   ✅ ${NAME}"; } \
+                || echo "   ❌ 下载失败: ${NAME}"
+          done
+
+          # 2. 本地重写 release body 链接（不访问 Gitea API，避免 403）
+          echo "=== 重写 release body 链接 ==="
+          cat downloaded_files.txt 2>/dev/null | sort -u | jq -R . | jq -s . > /tmp/downloaded_set.json
+          python3 - << 'PYEOF'
+          import json, re
+          with open("/tmp/release_body.md", "r", encoding="utf-8") as f:
+              body = f.read()
+          existing = set(json.load(open("/tmp/downloaded_set.json")))
+          print(f"本地已下载附件 {len(existing)} 个")
+          import os
+          GITEA_BASE = os.environ["PREPARE_GITEA_BASE"]
+          TAG = os.environ["TAG"]
+          pattern = re.compile(r"https?://github\.com/rustdesk/rustdesk/releases/download/[^/]+/([^)\s]+)")
+          counters = [0, 0]
+          def repl(m):
+              fname = m.group(1)
+              if fname in existing:
+                  counters[0] += 1
+                  return f"{GITEA_BASE}/releases/download/{TAG}/{fname}"
+              else:
+                  counters[1] += 1
+                  return m.group(0)
+          new_body = pattern.sub(repl, body)
+          print(f"已替换 {counters[0]} 个附件链接，保留 {counters[1]} 个")
+          with open("/tmp/release_body.md", "w", encoding="utf-8") as f:
+              f.write(new_body)
+          PYEOF
+          echo "✅ body 本地重写完成"
+        env:
+          PREPARE_GITEA_BASE: ${{ secrets.GITEA_API_URL }}/${{ secrets.GITEA_REPO }}
+
+      - name: Recreate Gitea release (delete + create)
+        id: gitea
+        run: |
+          set -uo pipefail
+          API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
+          AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
+
+          # 删除旧 release（整个删除，比循环删 assets 更干净）
+          OLD_REL=$(curl -fsSL "${AUTH[@]}" "${API}/releases/tags/${TAG}" 2>/dev/null || echo "")
+          OLD_ID=$(echo "${OLD_REL}" | jq -r '.id // empty' 2>/dev/null)
+          if [[ -n "${OLD_ID}" && "${OLD_ID}" != "null" ]]; then
+            echo "删除旧 release ${TAG}(id=${OLD_ID})..."
+            curl -fsSL "${AUTH[@]}" -X DELETE "${API}/releases/${OLD_ID}" || true
+          fi
+          curl -fsSL "${AUTH[@]}" -X DELETE "${API}/git/ref/tags/${TAG}" 2>/dev/null || true
+
+          # 创建新 release（带重写后的 body）
+          BODY_JSON=$(jq -Rs '{tag_name:$t, name:$t, body:., draft:false, prerelease:false}' --arg t "${TAG}" < /tmp/release_body.md)
+          NEW_REL=$(curl -fsSL "${AUTH[@]}" -H "Content-Type: application/json" \
+            -X POST "${API}/releases" -d "${BODY_JSON}")
+          REL_ID=$(echo "${NEW_REL}" | jq -r '.id')
+          echo "✅ 已创建新 release ${TAG}(id=${REL_ID})，body 含重写后的链接"
+          echo "rel_id=${REL_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload assets to Gitea release
+        id: mirror
+        env:
+          REL_ID: ${{ steps.gitea.outputs.rel_id }}
+        run: |
+          set -uo pipefail
+          # CF CDN 免费版对 POST 上传会缓冲+100s硬超时，导致上传慢/失败。
+          # 直连子域名(GITEA_DIRECT_URL)绕过 CF，速度更稳定。
+          # 策略：所有文件统一走直连 + 并发3（不区分大小文件）。
+          if [[ -n "${GITEA_DIRECT_URL}" ]]; then
+            UPLOAD_API="${GITEA_DIRECT_URL}/api/v1/repos/${GITEA_REPO}"
+            echo "上传路径: 直连(绕过CF)"
+          else
+            UPLOAD_API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
+            echo "上传路径: CF CDN(未配直连，大文件可能超时)"
+          fi
+
+          TOTAL=$(wc -l < downloaded_files.txt 2>/dev/null || echo 0)
+          # 初始化进度计数器（done/fail，原子更新）
+          echo "0" > /tmp/progress_done.txt
+          echo "0" > /tmp/progress_fail.txt
+
+          # 统一上传脚本：序号化 + 进度计数 + 状态图标，日志清晰可读
+          # 参数：$1="序号 文件名"（整行，内部 split）、$2=API、$3=REL_ID、$4=TOKEN、$5=TOTAL
+          cat > /tmp/upload_asset.sh << 'SCRIPT'
+          #!/bin/bash
+          set -uo pipefail
+          LINE="$1"; API="$2"; REL_ID="$3"; TOKEN="$4"; TOTAL="$5"
+          SEQ="${LINE%% *}"; NAME="${LINE#* }"
+          SIZE_MB=$(( $(stat -c%s "assets/${NAME}" 2>/dev/null || stat -f%z "assets/${NAME}") / 1024/1024 ))
+          ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "${NAME}")
+          # 用序号前缀 #01/#02... 代替 PID，更易读；⏳ 表示进行中
+          echo "   #${SEQ} ⏳ 开始: ${NAME} (${SIZE_MB}MB)"
+          HTTP_CODE=$(curl -sSL --max-time 7200 --speed-time 600 --speed-limit 1024 \
+              -w "%{http_code}" -o /tmp/resp_$$.txt \
+              -H "Authorization: token ${TOKEN}" -H "Content-Type: application/octet-stream" \
+              --data-binary "@assets/${NAME}" \
+              "${API}/releases/${REL_ID}/assets?name=${ENC}" 2>&1 | tail -1)
+          RESP=$(sed 's|https://[^ ]*|***(URL)***|g; s|'"${TOKEN}"'|***|g' /tmp/resp_$$.txt 2>/dev/null)
+          rm -f /tmp/resp_$$.txt
+          # 原子更新进度计数器
+          if [[ "${HTTP_CODE}" == "201" ]]; then
+            DONE=$(($(cat /tmp/progress_done.txt) + 1))
+            echo "${DONE}" > /tmp/progress_done.txt
+            echo "${NAME}" >> uploaded_assets.txt
+            echo "   #${SEQ} ✅ 完成: ${NAME} (${SIZE_MB}MB)  [进度 ${DONE}/${TOTAL}]"
+          else
+            FAIL=$(($(cat /tmp/progress_fail.txt) + 1))
+            echo "${FAIL}" > /tmp/progress_fail.txt
+            echo "   #${SEQ} ❌ 失败: ${NAME} (HTTP ${HTTP_CODE})  [已失败 ${FAIL}] | ${RESP}"
+          fi
+          SCRIPT
+          chmod +x /tmp/upload_asset.sh
+
+          echo "=== 上传所有资产（并发 3）==="
+          echo "待上传: ${TOTAL} 个"
+          # 通过环境变量传递参数给子脚本，避免 xargs/bash -c 的引号嵌套陷阱
+          # （曾因 bash -c '...'"${VAR}"'...' 混合引号导致 exit 123）
+          export UPLOAD_API REL_ID GITEA_TOKEN TOTAL
+          # 给每个文件分配序号，每行 "序号 文件名"，用 xargs 调脚本
+          # 用 -d '\n' 保证整行作为单个参数（文件名含空格也安全）
+          awk '{printf "%02d %s\n", NR, $0}' downloaded_files.txt > /tmp/upload_queue.txt
+          # 用 GNU xargs 按"\n"分词，每行一个 -I{} 替换，并发 3
+          # {} 整行传给脚本第一个参数（脚本内部再 split 序号/文件名）
+          cat /tmp/upload_queue.txt | xargs -P 3 -I {} bash /tmp/upload_asset.sh '{}' "${UPLOAD_API}" "${REL_ID}" "${GITEA_TOKEN}" "${TOTAL}"
+          wait
+
+          # 汇总
+          DONE=$(cat /tmp/progress_done.txt 2>/dev/null || echo 0)
+          FAIL=$(cat /tmp/progress_fail.txt 2>/dev/null || echo 0)
+          echo "=== 上传完成: 成功 ${DONE} / 失败 ${FAIL} / 总计 ${TOTAL} ==="
+          if [[ -f uploaded_assets.txt ]]; then
+            echo "已上传附件清单:"
+            sort -u uploaded_assets.txt | tee /tmp/asset_list.txt
+          fi
+          # 关键：上传失败则让本 step 失败（exit 1）。
+          # 否则 set -uo pipefail（无 -e）不会因 xargs exit 123 中断，后续步骤
+          # （record built tag、Notify success）仍会执行，导致"上传失败却报成功"。
+          if [[ "${FAIL}" -gt 0 ]]; then
+            echo "::error::有 ${FAIL} 个附件上传失败，本次发布未完成"
+            exit 1
+          fi
+          if [[ "${DONE}" -eq 0 && "${TOTAL}" -gt 0 ]]; then
+            echo "::error::全部 ${TOTAL} 个附件上传失败，本次发布未完成"
+            exit 1
+          fi
+
+          # 上传清单（本地统计，无需访问 Gitea API）
+          if [[ -f uploaded_assets.txt ]]; then
+            echo "已上传附件:"
+            sort -u uploaded_assets.txt | tee /tmp/asset_list.txt
+          fi
+
+      - name: Publish latest.json to Gitea repo root
+        env:
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          set -euo pipefail
+          API="${GITEA_API_URL}/api/v1/repos/${GITEA_REPO}"
+          AUTH=(-H "Authorization: token ${GITEA_TOKEN}")
+          # latest.json 内容：上游 VersionCheckResponse 期望的 {"url":".../tag/<ver>"}
+          # 客户端 rsplit('/') 取版本号，updater 把 tag 替换为 download 得下载地址。
+          REPO_HTML="${GITEA_API_URL}/${GITEA_REPO}"
+          URL_VALUE="${REPO_HTML}/releases/tag/${TAG}"
+          CONTENT=$(jq -nc --arg u "${URL_VALUE}" '{url:$u}')
+          # Base64 编码内容（Gitea 创建/更新文件 API 要求）
+          B64=$(printf '%s' "${CONTENT}" | base64 -w 0)
+          # 先尝试更新，失败则创建（Gitea 返回 404 表示文件不存在）
+          CODE=$(curl -sk -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
+            "${API}/contents/latest.json?ref=main")
+          if [[ "${CODE}" == "200" ]]; then
+            SHA=$(curl -fsSL "${AUTH[@]}" "${API}/contents/latest.json?ref=main" | jq -r '.sha')
+            curl -fsSL "${AUTH[@]}" -H "Content-Type: application/json" \
+              -X PUT "${API}/contents/latest.json" \
+              -d "{\"message\":\"update latest.json for ${TAG}\",\"content\":\"${B64}\",\"sha\":\"${SHA}\",\"branch\":\"main\"}" > /dev/null
+            echo "✅ latest.json 已更新（sha=${SHA:0:12}）"
+          else
+            curl -fsSL "${AUTH[@]}" -H "Content-Type: application/json" \
+              -X POST "${API}/contents/latest.json" \
+              -d "{\"message\":\"add latest.json for ${TAG}\",\"content\":\"${B64}\",\"branch\":\"main\"}" > /dev/null
+            echo "✅ latest.json 已创建"
+          fi
+          echo "内容: ${CONTENT}"
+          echo "raw URL: ${REPO_HTML}/raw/branch/main/latest.json"
+
+      - name: Summary
+        env:
+          REL_ID: ${{ steps.gitea.outputs.rel_id }}
+        run: |
+          set -euo pipefail
+          REPO_HTML="${GITEA_API_URL}/${GITEA_REPO}"
+          echo "### 发布完成 ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 标签: \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Gitea Release: ${REPO_HTML}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 版本检查 JSON: \`${REPO_HTML}/raw/branch/main/latest.json\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 下载前缀: \`${REPO_HTML}/releases/download/${TAG}/\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record built tag (for workflow_run dedup)
+        # 镜像成功后，把本次构建的 TAG 写入 .github/latest-built-tag（master 分支）。
+        # 下次 workflow_run（sync 自动触发）时，guard 会比较 latest-built-tag vs
+        # latest-synced-tag，相同则跳过（sync 无源码更新）。手动触发不受此影响。
+        #
+        # skip_build 模式下必须跳过本 step：该模式不编译，只是用已有 release 资产
+        # 验证镜像功能。若仍写入 latest-built-tag，会"谎报"该 TAG 已构建完成——
+        # 后续 sync 真正同步进同一 TAG 并触发 workflow_run 时，guard 因
+        # latest-built-tag == latest-synced-tag 而误判跳过，导致本应执行的完整构建丢失。
+        if: github.event.inputs.skip_build != 'true'
+        run: |
+          set -uo pipefail
+          GH_API="https://api.github.com/repos/${GITHUB_REPO_FULL}"
+          GH_AUTH=(-H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json")
+          PATH_FILE=".github/latest-built-tag"
+          B64=$(printf '%s' "${TAG}" | base64 -w 0)
+          # 查询现有文件 sha（存在则更新，不存在则创建）
+          CODE=$(curl -sS -o /dev/null -w "%{http_code}" "${GH_AUTH[@]}" "${GH_API}/contents/${PATH_FILE}?ref=master" || true)
+          if [[ "${CODE}" == "200" ]]; then
+            SHA=$(curl -fsSL "${GH_AUTH[@]}" "${GH_API}/contents/${PATH_FILE}?ref=master" | jq -r '.sha')
+            curl -fsSL "${GH_AUTH[@]}" -H "Content-Type: application/json" \
+              -X PUT "${GH_API}/contents/${PATH_FILE}" \
+              -d "{\"message\":\"chore: record built tag ${TAG}\",\"content\":\"${B64}\",\"sha\":\"${SHA}\",\"branch\":\"master\"}" > /dev/null
+            echo "✅ latest-built-tag 已更新为 ${TAG}（sha=${SHA:0:12}）"
+          else
+            # GitHub Contents API 创建文件用 PUT（非 POST）。GitHub 只支持 PUT，
+            # 不带 sha 时创建；Gitea 兼容 POST 但 GitHub 对 POST 返回 404。
+            curl -fsSL "${GH_AUTH[@]}" -H "Content-Type: application/json" \
+              -X PUT "${GH_API}/contents/${PATH_FILE}" \
+              -d "{\"message\":\"chore: record built tag ${TAG}\",\"content\":\"${B64}\",\"branch\":\"master\"}" > /dev/null
+            echo "✅ latest-built-tag 已创建为 ${TAG}"
+          fi
+
+      - name: Notify on publish success
+        if: success()
+        env:
+          GITEA_RELEASE_URL: ${{ format('{0}/{1}/releases/tag/{2}', secrets.GITEA_API_URL, secrets.GITEA_REPO, needs.guard.outputs.tag) }}
+        run: |
+          set -euo pipefail
+          chmod +x .github/scripts/notify.sh
+          # 拼接附件清单到 message（每行一个文件名）
+          ASSET_MSG=""
+          if [[ -f /tmp/asset_list.txt ]]; then
+            ASSET_COUNT=$(grep -c . /tmp/asset_list.txt || true)
+            ASSET_MSG=$'\n\n已编译附件 ('"${ASSET_COUNT}"$' 个):\n'"$(cat /tmp/asset_list.txt | sed 's/^/• /')"
+          fi
+          MESSAGE="全平台产物已镜像到 Gitea，release 描述已同步源站，latest.json 已更新。${ASSET_MSG}"
+          ./.github/scripts/notify.sh info "rustdesk ${TAG} 发布完成" \
+            "${MESSAGE}" \
+            "" "${GITEA_RELEASE_URL}"
+
+      - name: Notify on publish failure
+        if: failure()
+        env:
+          GITEA_RELEASE_URL: ${{ format('{0}/{1}/releases', secrets.GITEA_API_URL, secrets.GITEA_REPO) }}
+        run: |
+          chmod +x .github/scripts/notify.sh
+          ./.github/scripts/notify.sh error "rustdesk ${TAG} 发布失败" \
+            "构建或镜像到 Gitea 失败，请查看 Action 日志排查。" \
+            "" "${GITEA_RELEASE_URL}"

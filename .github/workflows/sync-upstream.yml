@@ -1,0 +1,468 @@
+# 自动同步源站（rustdesk/rustdesk）正式版 release 到本仓库（vseal001/rustdesk）。
+#
+# 工作内容：
+#   1. 每天（或手动）查询源站最新正式版 release 标签。
+#   2. 与本仓库 .github/latest-synced-tag 幂等判断，已同步版本 >= 目标则跳过。
+#   3. git merge 上游 tag。若合并冲突 -> 停止并发 ntfy 通知(warning)。
+#   4. 解析 tag 锁定的 hbb_common commit，校验 fork 是否包含该 commit。
+#      若 fork 滞后不含该 commit -> 停止并发通知(warning)，提示手动 sync fork。
+#   5. 把 hbb_common 子模块 url 改回 fork，指针切到该 commit。
+#   6. 更新 VERSION，写回 latest-synced-tag，commit + push。
+#   7. 成功完成 -> 发 ntfy 通知(info)。
+#
+# 需要 Secrets：
+#   BOT_TOKEN    = 你的 fine-grained PAT（Contents R/W + Workflows R/W，用于 push 含 workflow 改动的提交）
+#   NTFY_URL、NTFY_TOKEN
+# GITHUB_TOKEN 仅用于读取上游/fork 仓库信息（自动提供，无需配置）。
+name: Sync Upstream Release
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "指定源站标签（如 1.4.8）；填 latest 或留空则自动取最新正式版"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: "rustdesk/rustdesk"
+  HBB_COMMON_FORK_URL: "https://github.com/vseal001/hbb_common"
+  # 用现有 GITEA_API_URL + GITEA_REPO 拼接 release base，不新增 secret
+  GITEA_RELEASE_BASE: "${{ secrets.GITEA_API_URL }}/${{ secrets.GITEA_REPO }}"
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    env:
+      NTFY_URL: ${{ secrets.NTFY_URL }}
+      NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v5
+        with:
+          ref: master
+          fetch-depth: 0
+          submodules: false
+          # 用 BOT_TOKEN(PAT) 而非默认 GITHUB_TOKEN：PAT 有 workflows 写权限，
+          # 可 push 含 .github/workflows/ 改动的提交（GITHUB_TOKEN 受限无法 push workflow 文件）
+          token: ${{ secrets.BOT_TOKEN }}
+
+      - name: Resolve target upstream tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          # 输入 latest 或留空 -> 取最新正式版；否则用指定 tag
+          if [[ -n "${INPUT_TAG}" && "${INPUT_TAG}" != "latest" ]]; then
+            TAG="${INPUT_TAG}"
+          else
+            TAG=$(gh release list \
+              --repo "${UPSTREAM_REPO}" \
+              --limit 30 \
+              --json tagName,isPrerelease \
+              --jq '[.[] | select(.isPrerelease == false) | select(.tagName != "nightly")] | .[0].tagName')
+          fi
+          if [[ -z "${TAG}" ]]; then
+            echo "::error::未能解析到源站正式版标签"
+            exit 1
+          fi
+          if [[ ! "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$ ]]; then
+            echo "::error::标签 ${TAG} 不是正式版本号格式，已跳过"
+            exit 1
+          fi
+          echo "target_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "目标源站标签: ${TAG}"
+
+      - name: Idempotency check
+        id: idem
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          LAST=""
+          if [[ -f .github/latest-synced-tag ]]; then
+            LAST=$(tr -d '[:space:]' < .github/latest-synced-tag)
+          fi
+          echo "上次同步: '${LAST}'，目标: '${TARGET_TAG}'"
+          SKIP=false
+          if [[ -n "${LAST}" ]]; then
+            # LAST >= TARGET_TAG 则跳过（用版本比较，非字符串比较；
+            # 字符串比较下 "1.4.10" < "1.4.9" 会误判，sort -V 可正确处理）
+            NEWEST=$(printf '%s\n%s\n' "${TARGET_TAG}" "${LAST}" | sort -V | tail -1)
+            if [[ "${NEWEST}" == "${LAST}" ]]; then
+              SKIP=true
+            fi
+          fi
+          if [[ "${SKIP}" == "true" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "本仓库已在 ${LAST}（>= 目标 ${TARGET_TAG}），跳过。"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "目标 ${TARGET_TAG} 比上次 ${LAST:-（无）} 新，继续同步。"
+          fi
+
+      - name: Configure git identity
+        if: steps.idem.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # --- 合并：冲突则失败 ---
+      - name: Fetch upstream tag
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "refs/tags/${TARGET_TAG}:refs/tags/${TARGET_TAG}" --no-tags
+          echo "已拉取 tag ${TARGET_TAG}"
+
+      - name: Merge upstream tag
+        id: merge
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          # 见 Bump VERSION 步骤说明：base64 携带动态表达式字面量
+          DYN_TAG_B64: 'JHt7IGlucHV0cy51cGxvYWQtdGFnIH19'
+        run: |
+          set -uo pipefail
+          # 第一步：尝试普通合并
+          if git merge --no-edit "${TARGET_TAG}"; then
+            echo "merge_rc=0" >> "$GITHUB_OUTPUT"
+            echo "✅ 合并 ${TARGET_TAG} 成功"
+            exit 0
+          fi
+
+          # 合并冲突：先尝试自动解决"仅 version 行"的冲突（安全可自动）
+          # 上游每次升级改 version 行(Cargo.toml/flutter-build.yml)，与本地上次值冲突
+          echo "⚠️ 合并 ${TARGET_TAG} 存在冲突，分析冲突类型..."
+          CONFLICT_FILES=$(git diff --name-only --diff-filter=U)
+          echo "冲突文件: ${CONFLICT_FILES}"
+
+          # 检查每个冲突文件的冲突块是否都只是 version 行
+          AUTO_RESOLVABLE=true
+          for f in ${CONFLICT_FILES}; do
+            # 提取该文件的冲突块（<<<< ==== >>>> 之间），检查是否只涉及 version 行
+            # 用 grep 统计冲突块内非 version 的实质内容行
+            if ! git diff "${f}" 2>/dev/null | awk '
+              /^<<<<<<<|=======|>>>>>>>/ { next }
+              /^\s*version\s*=|^\s*VERSION:/ { next }
+              /^$/ { next }
+              { print; exit 1 }
+            ' 2>/dev/null; then
+              echo "文件 ${f} 含非 version 行的冲突，无法自动解决"
+              AUTO_RESOLVABLE=false
+              break
+            fi
+          done
+
+          if [[ "${AUTO_RESOLVABLE}" == "true" ]]; then
+            echo "✅ 所有冲突仅为 version 行，自动解决..."
+            # 解码动态表达式字面量（flutter-build.yml 用），供下方 perl 读取
+            export LITERAL=$(printf '%s' "${DYN_TAG_B64}" | base64 -d)
+            # 对每个冲突文件，把 version 行的冲突块替换为 TARGET_TAG
+            for f in ${CONFLICT_FILES}; do
+              # Cargo.toml: version = "x" 冲突 → 用 TARGET_TAG
+              perl -i -0pe 's/<<<<<<< .*?\n(version\s*=\s*)"[^"]*"\n=======\n\1"[^"]*"\n>>>>>>> .*?\n/${1}"'"${TARGET_TAG}"'"\n/g' "${f}" 2>/dev/null || true
+              # flutter-build.yml: VERSION: "x" 冲突 → 用动态表达式字面量（由 $ENV{LITERAL} 注入）
+              perl -i -0pe 's/<<<<<<< .*?\n(\s*VERSION:\s*)"[^"]*"\n=======\n\1"[^"]*"\n>>>>>>> .*?\n/${1}"$ENV{LITERAL}"\n/g' "${f}" 2>/dev/null || true
+              # 兜底：清除任何残留的冲突标记（如果是 version 行）
+              if grep -q '^<<<<<<<\|^=======\|^>>>>>>>' "${f}" 2>/dev/null; then
+                echo "文件 ${f} 仍有冲突标记，无法自动解决"
+                AUTO_RESOLVABLE=false
+                break
+              fi
+              git add "${f}"
+              echo "已自动解决 ${f} 的 version 冲突"
+            done
+          fi
+
+          if [[ "${AUTO_RESOLVABLE}" == "true" ]]; then
+            # 全局兜底：提交前扫描所有冲突文件，确保绝无冲突标记残留。
+            # 这道闸防御 awk/perl 漏判（如一个文件同时含 version 冲突和非 version
+            # 冲突时，perl 只清了 version 块，残留的非 version 冲突标记可能被 commit）。
+            # 历史教训：曾因此把含 <<<<<<< 标记的 flutter-build.yml commit 进 master，
+            # 导致下游 build workflow 全线 yaml 解析失败瘫痪。
+            RESIDUAL=""
+            for f in ${CONFLICT_FILES}; do
+              hits=$(grep -nE '^(<<<<<<<|=======|>>>>>>>)' "${f}" 2>/dev/null || true)
+              if [[ -n "${hits}" ]]; then
+                RESIDUAL="${RESIDUAL}${f}:${hits}\n"
+              fi
+            done
+            if [[ -n "${RESIDUAL}" ]]; then
+              echo "⚠️ 提交前扫描发现冲突标记残留（version 替换未覆盖这些块）:"
+              echo -e "${RESIDUAL}"
+              echo "→ 判定为复杂冲突，转 PR 流程，绝不提交含冲突标记的内容"
+              AUTO_RESOLVABLE=false
+            fi
+          fi
+
+          if [[ "${AUTO_RESOLVABLE}" == "true" ]]; then
+            git commit --no-edit --no-verify
+            echo "merge_rc=0" >> "$GITHUB_OUTPUT"
+            echo "✅ 合并 ${TARGET_TAG} 成功（version 冲突已自动解决）"
+            exit 0
+          fi
+
+          # 存在非 version 冲突：创建/复用【单一持续】冲突解决 PR
+          # 设计：base = 本仓库(vseal001/rustdesk) master，绝不指向源站。
+          #      只要冲突未解决，该 PR 持续保持开启（"一直请求"），不堆积多个 PR。
+          BRANCH="sync/conflict-${TARGET_TAG}"
+          echo "⚠️ 存在无法自动解决的冲突，目标分支: ${BRANCH}（base=${GITHUB_REPOSITORY}:master）"
+
+          # 显式确认 origin 指向本仓库（绝不推到源站）
+          ORIGIN_URL=$(git remote get-url origin)
+          echo "origin 指向: ${ORIGIN_URL}"
+          if ! echo "${ORIGIN_URL}" | grep -q "${GITHUB_REPOSITORY}"; then
+            echo "::error::origin 未指向本仓库 ${GITHUB_REPOSITORY}，中止 push 防止误推源站"
+            exit 1
+          fi
+
+          # 检查本仓库是否已存在该分支的开放 PR（复用，避免堆积）
+          EXISTING_PR=$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base master \
+            --head "${BRANCH}" \
+            --state open \
+            --json number,url \
+            --jq '.[0].url' 2>/dev/null || echo "")
+          echo "已有开放 PR: ${EXISTING_PR:-（无）}"
+
+          if [[ -z "${EXISTING_PR}" ]]; then
+            # 首次：创建一个让 GitHub 服务端能检测到冲突的 PR。
+            # 关键：PR 分支的 HEAD 必须与 base(master) 分叉，GitHub 在合并时
+            # 实时计算 mergeability 才会显示 "Resolve conflicts" 按钮。
+            # 错误做法（旧逻辑）：在本分支内 git merge 上游 tag 并 commit 含 <<<<<<<
+            #   标记的内容——这样 PR HEAD 是"已完成"的 merge commit，GitHub 认为无冲突，
+            #   不显示 Resolve 按钮，用户只看到一坨脏文件。
+            # 正确做法：PR 分支直接指向上游 tag 的 commit，base=master。
+            #   GitHub 合并 PR 时会用三方合并，遇到本地注入块与上游改动同区域
+            #   → 产生真实冲突 → 显示 Resolve 按钮，可在线编辑解决。
+            git checkout -f master
+            git checkout -B "${BRANCH}" "${TARGET_TAG}"
+            git push origin "${BRANCH}" --force
+
+            # 显式 --repo 本仓库 + --base 本仓库 master，确保 PR 落在 vseal001/rustdesk
+            PR_URL=$(gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base master \
+              --head "${BRANCH}" \
+              --title "sync: 合并上游 ${TARGET_TAG}（含冲突待解决）" \
+              --body "$(cat <<EOF
+          ## 合并冲突 - 需人工解决
+
+          上游标签 **${TARGET_TAG}** 与本仓库存在非 version 行的冲突（如 NDK_VERSION、签名步骤等上游改动与本地注入块同区域），已自动生成本 PR。
+
+          本 PR 分支直接指向上游 tag，base=master。GitHub 合并时会用三方合并检测冲突，显示 **"Resolve conflicts"** 按钮。
+
+          **解决步骤**：
+          1. 点击 PR 底部 "Resolve conflicts" 按钮
+          2. 解决每个冲突标记（\`<<<<\` \`====\` \`>>>>\`）
+          3. **关键：解决时务必保留本仓库的注入块**，这些是 fork 独有、上游没有的：
+             - \`.github/scripts/replace-update-source.sh "\$WORKSPACE"\` 调用（更新源注入）
+             - \`RENDEZVOUS_SERVERS\` / \`RS_PUB_KEY\` 的 sed（中继服务器/公钥）
+             - \`CUSTOM_API_SERVER\` 的 sed（API 服务器）
+             - \`replace-package-names.sh\` 调用（包名替换）
+             - \`VERSION\` / \`TAG_NAME\` 动态化（\`\${{ inputs.upload-tag }}\`）
+             - \`SKIP_SIGN: 1\`（自签开关）
+             - **flutter-build.yml/bridge.yml 的 git-ref 机制**（\`git-ref\` input、
+               checkout 的 \`ref: \${{ inputs.git-ref || github.ref }}\`、\`fetch-depth: 0\`、
+               "已从 master 恢复 fork 注入脚本" 恢复块）—— 用于按 tag checkout 编译
+          4. Commit merge → 合并本 PR
+          5. 合并后 \`build-and-publish.yml\` 会通过 pull_request 触发器自动构建
+
+          > 目标分支：**${GITHUB_REPOSITORY}:master**（本仓库主分支）
+          > 仅 version 行的冲突 sync 已自动解决；本 PR 涉及上游实质改动与本地注入的冲突。
+          > 只要不合并/关闭本 PR，每日同步会保持其开启（持续提醒）。
+          EOF
+          )" 2>&1 | tail -1) || PR_URL=""
+          else
+            # PR 已存在：保持开启（持续请求），不覆盖用户在线解决进度
+            PR_URL="${EXISTING_PR}"
+            echo "✅ 冲突 PR 已存在并保持开启（持续请求）: ${PR_URL}"
+          fi
+
+          # 校验 PR 的 base 确实是本仓库 master（防止误建到源站）
+          if [[ -n "${PR_URL}" ]]; then
+            PR_NUM=$(echo "${PR_URL}" | grep -oE '[0-9]+$')
+            PR_BASE_REPO=$(gh pr view "${PR_NUM}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json baseRepository,headRepository \
+              --jq '.baseRepository.nameWithOwner + " <- " + .headRepository.nameWithOwner' 2>/dev/null || echo "")
+            echo "PR #${PR_NUM} base<-head: ${PR_BASE_REPO}"
+            if [[ -n "${PR_BASE_REPO}" && "${PR_BASE_REPO}" != "${GITHUB_REPOSITORY} <- "* ]]; then
+              echo "::error::PR base 异常：期望 ${GITHUB_REPOSITORY}，实际 ${PR_BASE_REPO}"
+            fi
+          fi
+
+          echo "conflict_pr_url=${PR_URL}" >> "$GITHUB_OUTPUT"
+          echo "merge_rc=1" >> "$GITHUB_OUTPUT"
+          echo "::error::合并 ${TARGET_TAG} 存在复杂冲突，冲突 PR: ${PR_URL}"
+          exit 1
+
+      # --- fork 版本校验：不含所需 commit 则停止 ---
+      - name: Verify hbb_common fork contains required commit
+        id: hbb
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 解析该上游 tag 锁定的 hbb_common commit
+          HBB_COMMIT=$(git ls-tree "${TARGET_TAG}" libs/hbb_common | awk '{print $3}')
+          if [[ -z "${HBB_COMMIT}" ]]; then
+            echo "::error::无法从 tag ${TARGET_TAG} 解析 hbb_common 指针"
+            exit 1
+          fi
+          echo "tag ${TARGET_TAG} 锁定的 hbb_common commit: ${HBB_COMMIT}"
+          echo "hbb_commit=${HBB_COMMIT}" >> "$GITHUB_OUTPUT"
+
+          # 校验 fork 是否包含该 commit（fork 是上游 mirror，正常应包含）
+          CODE=$(gh api "repos/vseal001/hbb_common/commits/${HBB_COMMIT}" \
+            --jq '.sha' 2>/dev/null && echo OK || echo "")
+          if [[ -z "${CODE}" ]]; then
+            echo "::error::fork (vseal001/hbb_common) 不含 commit ${HBB_COMMIT:0:12}，需手动 sync fork 后重试"
+            exit 1
+          fi
+          echo "✅ fork 包含所需 commit ${HBB_COMMIT:0:12}"
+
+      - name: Re-point hbb_common submodule to fork
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          HBB_COMMIT: ${{ steps.hbb.outputs.hbb_commit }}
+        run: |
+          set -euo pipefail
+          # 把 .gitmodules url 改回 fork
+          perl -i -pe 's|url = https://github\.com/rustdesk/hbb_common|url = '"${HBB_COMMON_FORK_URL}"'|' .gitmodules
+          git config submodule."libs/hbb_common".url "${HBB_COMMON_FORK_URL}"
+          # 指针切到 fork 上对应 commit
+          git update-index --cacheinfo 160000 "${HBB_COMMIT}" libs/hbb_common
+          echo "✅ hbb_common url -> fork, 指针 -> ${HBB_COMMIT:0:12}"
+
+      - name: Detect upstream workflow changes
+        id: wfdiff
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          set -uo pipefail
+          # 检测上游 tag 对 .github/workflows/ 的改动（merge 自动提交 HEAD，merge 前 HEAD~1）
+          # 用于发 ntfy 提醒：用 BOT_TOKEN(PAT) 可自动 push workflow 改动，
+          # 但仍提醒你核对注入点是否完好（你的自定义块 fork 独有，通常不冲突）
+          WF_CHANGED=$(git diff --name-only HEAD~1 HEAD -- .github/workflows/ 2>/dev/null || echo "")
+          if [[ -n "${WF_CHANGED}" ]]; then
+            echo "⚠️ 上游 ${TARGET_TAG} 改动了 workflow 文件:"
+            echo "${WF_CHANGED}"
+            echo "wf_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "上游 ${TARGET_TAG} 未改动 workflow 文件"
+            echo "wf_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump VERSION fields
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          # 用 base64 携带动态表达式字面量字符串，绕开 GA 对 run:
+          # 块里 ${{ }} 序列的替换（本 workflow 无此 input，会被替换成空导致语法错误）。
+          # 该字符串写入 flutter-build.yml，由 build workflow 运行时解析为实际 tag。
+          # 编码源（base64）：动态表达式字面量（build workflow 的 inputs.upload-tag）
+          DYN_TAG_B64: 'JHt7IGlucHV0cy51cGxvYWQtdGFnIH19'
+        run: |
+          set -euo pipefail
+          # flutter-build.yml 的 VERSION 行兜底：sync 合并上游后，上游可能把它
+          # 改回硬编码（如 VERSION: "1.4.6"）。此处强制重应用为动态语法
+          # ${{ inputs.upload-tag }}，确保产物文件名跟随实际构建 tag。
+          # 注意：.gitattributes 无 merge=ours 保护（不存在该规则），靠这里兜底。
+          if grep -q '^  VERSION: "[0-9]' .github/workflows/flutter-build.yml; then
+            # 解码出动态表达式字面量，export 给 perl 读，避免 shell/perl 双重转义
+            export LITERAL=$(printf '%s' "${DYN_TAG_B64}" | base64 -d)
+            perl -i -pe 's|^  VERSION: ".*"|  VERSION: "$ENV{LITERAL}"|' .github/workflows/flutter-build.yml
+            echo "已将 flutter-build.yml 的 VERSION 强制重应用为动态表达式"
+          fi
+          # Cargo.toml 的 version 仍是硬编码常量，需要 bump
+          sed -i -E 's|^version = ".*"|version = "'"${TARGET_TAG}"'"|' Cargo.toml
+          # flutter/pubspec.yaml 的 version（Android APK 内部 versionName 直接来源）。
+          # 必须与 Cargo.toml 同步 bump，否则 APK 文件名是新版（env.VERSION）但
+          # "关于"页面显示的 versionName 停留在旧版（pubspec 没更新）。
+          # 格式 version: X.Y.Z+buildNum，保留 +buildNum 部分。
+          if [[ -f flutter/pubspec.yaml ]]; then
+            sed -i -E 's|^version: [0-9]+\.[0-9]+\.[0-9]+(\+[0-9]+)?|version: '"${TARGET_TAG}"'\1|' flutter/pubspec.yaml
+            echo "pubspec.yaml version 已 bump 为 ${TARGET_TAG}（保留 build 号）"
+          fi
+          printf '%s' "${TARGET_TAG}" > .github/latest-synced-tag
+          echo "VERSION -> ${TARGET_TAG} (Cargo.toml + pubspec.yaml 已 bump, flutter-build.yml 动态)"
+
+      - name: Commit and push
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          git add -A
+          git commit -m "sync: merge upstream ${TARGET_TAG} + bump VERSION + re-point hbb_common"
+          # push 凭证来自 checkout 的 BOT_TOKEN(PAT)，有 workflows 写权限，
+          # 可 push 含 .github/workflows/ 改动的提交
+          git push origin master
+          echo "✅ 已 push（用 BOT_TOKEN，含上游 workflow 改动）"
+
+      # --- 通知 ---
+      - name: Notify on merge conflict
+        if: failure() && steps.merge.outcome == 'failure'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          PR_URL: ${{ steps.merge.outputs.conflict_pr_url }}
+        run: |
+          chmod +x .github/scripts/notify.sh
+          if [[ -n "${PR_URL}" ]]; then
+            # action_url_1 指向 PR，label 定制为"打开冲突 PR"，避免按钮文字与跳转不符
+            ./.github/scripts/notify.sh warning "rustdesk 同步需处理冲突" \
+              "合并上游 tag ${TARGET_TAG} 存在冲突，已创建 PR，请在线解决后合并。" \
+              "${PR_URL}" "" "打开冲突PR" ""
+          else
+            ./.github/scripts/notify.sh warning "rustdesk 同步失败" \
+              "合并上游 tag ${TARGET_TAG} 时存在冲突，且创建 PR 失败，请查看日志。" \
+              "" "${GITEA_RELEASE_BASE}"
+          fi
+
+      - name: Notify on fork version mismatch
+        if: failure() && steps.hbb.outcome == 'failure'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+          HBB_COMMIT: ${{ steps.hbb.outputs.hbb_commit }}
+        run: |
+          chmod +x .github/scripts/notify.sh
+          ./.github/scripts/notify.sh warning "rustdesk 同步停止" \
+            "hbb_common fork 不含 commit ${HBB_COMMIT:0:12}（tag ${TARGET_TAG} 所需），请手动 sync fork 后重试。" \
+            "" "${GITEA_RELEASE_BASE}"
+
+      - name: Notify on success
+        if: success() && steps.idem.outputs.skip != 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          chmod +x .github/scripts/notify.sh
+          ./.github/scripts/notify.sh info "rustdesk 同步完成" \
+            "已合并上游 ${TARGET_TAG} 并更新 VERSION。build-and-publish.yml 会通过 workflow_run 监听本 workflow 成功后自动触发构建。" \
+            "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
+
+      - name: Notify on upstream workflow changes
+        if: success() && steps.wfdiff.outputs.wf_changed == 'true'
+        env:
+          TARGET_TAG: ${{ steps.resolve.outputs.target_tag }}
+        run: |
+          chmod +x .github/scripts/notify.sh
+          ./.github/scripts/notify.sh warning "rustdesk 上游改了 workflow" \
+            "上游 ${TARGET_TAG} 改动了 .github/workflows/ 文件，已用 BOT_TOKEN 自动合并。请抽查 flutter-build.yml：确认你的 11 处 replace-update-source.sh 注入点和 RENDEZVOUS/RS_PUB_KEY sed 仍存在（这些块 fork 独有，正常不冲突）。" \
+            "" "${GITEA_RELEASE_BASE}/tag/${TARGET_TAG}"
