@@ -381,16 +381,23 @@ jobs:
           DYN_TAG_B64: 'JHt7IGlucHV0cy51cGxvYWQtdGFnIH19'
         run: |
           set -euo pipefail
-          # flutter-build.yml 的 VERSION 行兜底：sync 合并上游后，上游可能把它
-          # 改回硬编码（如 VERSION: "1.4.6"）。此处强制重应用为动态语法
+          # flutter-build.yml 的 VERSION 行兜底：sync 合并上游后，上游的 VERSION
+          # 是硬编码（如 VERSION: "1.4.9"）。此处强制改成动态语法
           # ${{ inputs.upload-tag }}，确保产物文件名跟随实际构建 tag。
+          # 注意：VERSION 行在上游原位置（VCPKG_COMMIT_ID 之后、NDK_VERSION 之前），
+          # 不在 TAG_NAME 旁边额外加，避免合并时产生 duplicate key。
           # 注意：.gitattributes 无 merge=ours 保护（不存在该规则），靠这里兜底。
-          if grep -q '^  VERSION: "[0-9]' .github/workflows/flutter-build.yml; then
-            # 解码出动态表达式字面量，export 给 perl 读，避免 shell/perl 双重转义
-            export LITERAL=$(printf '%s' "${DYN_TAG_B64}" | base64 -d)
-            perl -i -pe 's|^  VERSION: ".*"|  VERSION: "$ENV{LITERAL}"|' .github/workflows/flutter-build.yml
-            echo "已将 flutter-build.yml 的 VERSION 强制重应用为动态表达式"
+          export LITERAL=$(printf '%s' "${DYN_TAG_B64}" | base64 -d)
+          perl -i -pe 's|^  VERSION: "[0-9][^"]*"|  VERSION: "$ENV{LITERAL}"|' .github/workflows/flutter-build.yml
+          # 兜底：若合并残留了多个 VERSION 行，只保留第一个
+          VERSION_COUNT=$(grep -c '^  VERSION:' .github/workflows/flutter-build.yml || true)
+          if [[ "${VERSION_COUNT}" -gt 1 ]]; then
+            awk '/^  VERSION:/ { if (seen) next; seen=1 } { print }' \
+              .github/workflows/flutter-build.yml > /tmp/fb_nodup.yml
+            mv /tmp/fb_nodup.yml .github/workflows/flutter-build.yml
+            echo "已删除 ${VERSION_COUNT}-1=重复的 VERSION 行（合并残留）"
           fi
+          echo "flutter-build.yml VERSION 已确保为单个动态表达式"
           # Cargo.toml 的 version 仍是硬编码常量，需要 bump
           sed -i -E 's|^version = ".*"|version = "'"${TARGET_TAG}"'"|' Cargo.toml
           # flutter/pubspec.yaml 的 version（Android APK 内部 versionName 直接来源）。
