@@ -176,6 +176,18 @@ main() {
         log_warn "Desktop desktop_home_page.dart 锚点未找到，跳过"
     fi
 
+    # --- 6. 标题栏 logo ---
+    # 上游 1.4.8+ theme logo 逻辑：loadLogo() 找 assets/logo_light.png / logo_dark.png / logo.png
+    # fork 没有这些文件 → Offstage() 不显示。
+    # 修复：把 fork 自定义的 res/icon.png 复制为 flutter/assets/logo.png。
+    # Image.asset 只能加载 png（不能 svg），icon.png 是方形图标，作为标题栏 logo 可接受。
+    local assets_dir="flutter/assets"
+    if [[ ! -f "$assets_dir/logo.png" ]] && [[ -f "res/icon.png" ]]; then
+        mkdir -p "$assets_dir"
+        cp res/icon.png "$assets_dir/logo.png"
+        log_info "✅ 已复制 res/icon.png → flutter/assets/logo.png（标题栏 logo）"
+    fi
+
     # 清理 macOS sed 备份
     if [[ "$os" == "macOS" ]]; then
         find . -name "*.bak" -type f -delete 2>/dev/null || true
