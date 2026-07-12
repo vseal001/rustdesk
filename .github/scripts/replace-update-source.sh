@@ -154,6 +154,28 @@ main() {
         log_error "未找到 $common_rs"
     fi
 
+    # --- 5. 升级跳转 URL：从官方改为用版本检查返回的 updateUrl ---
+    # Android connection_page.dart 和 Desktop desktop_home_page.dart 都有
+    # 硬编码 'https://rustdesk.com/download'，版本检查拿到的 updateUrl 被忽略。
+    # 改成用 updateUrl 参数，这样点击升级跳转到 fork 的 Gitea release 页面。
+    log_info "注入升级跳转 URL（Android + Desktop 便携版）..."
+    # Android: final url = 'https://rustdesk.com/download'; → final url = updateUrl;
+    local conn_dart="flutter/lib/mobile/pages/connection_page.dart"
+    if [[ -f "$conn_dart" ]] && grep -q "final url = 'https://rustdesk.com/download'" "$conn_dart"; then
+        $sed_cmd "s|final url = 'https://rustdesk.com/download'|final url = updateUrl|" "$conn_dart"
+        log_info "✅ Android 升级跳转改为 updateUrl"
+    else
+        log_warn "Android connection_page.dart 锚点未找到，跳过"
+    fi
+    # Desktop 便携版: Uri.parse('https://rustdesk.com/download') → Uri.parse(updateUrl)
+    local home_dart="flutter/lib/desktop/pages/desktop_home_page.dart"
+    if [[ -f "$home_dart" ]] && grep -q "rustdesk.com/download" "$home_dart"; then
+        $sed_cmd "s|Uri.parse('https://rustdesk.com/download')|Uri.parse(updateUrl)|" "$home_dart"
+        log_info "✅ Desktop 便携版升级跳转改为 updateUrl"
+    else
+        log_warn "Desktop desktop_home_page.dart 锚点未找到，跳过"
+    fi
+
     # 清理 macOS sed 备份
     if [[ "$os" == "macOS" ]]; then
         find . -name "*.bak" -type f -delete 2>/dev/null || true
