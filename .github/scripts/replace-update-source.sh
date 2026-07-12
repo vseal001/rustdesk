@@ -125,6 +125,31 @@ main() {
         else
             log_warn "未找到 client.post(&url)（可能已改或上游重构），跳过"
         fi
+
+        # --- 4. exe 便携版下载升级 fallback ---
+        # 上游 flutter_ffi.rs 的 download-file-$version 分支：
+        #   is_msi_installed() 返回 Err（注册表无 Uninstall\RustDesk 键）时直接报错。
+        # 但 fork 的 exe 便携版放在安装路径 → is_cur_exe_the_installed()=true → 走 handleUpdate
+        # → is_msi_installed() 查注册表失败 → Err → 报 "error:update-failed-check-msi-tip"
+        # 修复：Err 时 fallback 到 exe（便携版自然用 exe 而非 msi）。
+        # 改 flutter_ffi.rs 的 Err 分支：从报错改成返回 exe 文件名。
+        local ffi_rs="src/flutter_ffi.rs"
+        if [[ -f "$ffi_rs" ]]; then
+            log_info "注入 exe 便携版下载 fallback（flutter_ffi.rs）..."
+            # 把 Err 分支的报错改成 exe fallback
+            # 原: (Err(e), _) => { log::error!(...); format!("error:update-failed-check-msi-tip") }
+            # 改: (Err(_), _) => match release_arch_suffix() { Some(arch) => exe, None => error }
+            if grep -q 'error:update-failed-check-msi-tip' "$ffi_rs"; then
+                perl -i -0pe 's/\(Err\(e\), _\) => \{.*?format!\("error:update-failed-check-msi-tip"\).*?\}/(Err(_), _) => match crate::platform::windows::release_arch_suffix() {\n                    Some(arch) => format!("rustdesk-{_version}-{arch}.exe"),\n                    None => "error:unsupported".to_owned(),\n                }/s' "$ffi_rs"
+                if grep -q 'error:update-failed-check-msi-tip' "$ffi_rs"; then
+                    log_warn "flutter_ffi.rs Err 分支替换未匹配（锚点可能变化），跳过"
+                else
+                    log_info "✅ exe 便携版下载 fallback 已注入"
+                fi
+            else
+                log_info "flutter_ffi.rs 无 update-failed-check-msi-tip（可能已注入），跳过"
+            fi
+        fi
     else
         log_error "未找到 $common_rs"
     fi
