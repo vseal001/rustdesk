@@ -188,6 +188,22 @@ main() {
         log_info "✅ 已复制 res/icon.png → flutter/assets/logo.png（标题栏 logo）"
     fi
 
+    # --- 7. downloader HEAD 请求 Content-Length fallback ---
+    # Gitea 对带 Accept-Encoding: gzip 的 HEAD 请求返回 Content-Encoding: gzip
+    # 但不返回 Content-Length（chunked），导致 downloader bail!("Failed to get content length")。
+    # 官方 api.rustdesk.com 不压缩二进制下载，上游没遇到此问题。
+    # 修复：HEAD 拿不到 Content-Length 时，不 bail，设 total_size=0（进度条无百分比但能下载）。
+    local dl_rs="src/hbbs_http/downloader.rs"
+    if [[ -f "$dl_rs" ]] && grep -q 'Failed to get content length' "$dl_rs"; then
+        # 把 bail! 那段改成设 total_size=0（用 perl 精确匹配 let Some/else 块）
+        perl -i -0pe 's/let Some\(total_size\) = total_size else \{.*?bail!\("Failed to get content length"\).*?\};/let total_size = total_size.unwrap_or(0);/s' "$dl_rs"
+        if grep -q 'Failed to get content length' "$dl_rs"; then
+            log_warn "downloader.rs Content-Length fallback 替换未匹配（锚点可能变化），跳过"
+        else
+            log_info "✅ downloader HEAD Content-Length fallback 已注入"
+        fi
+    fi
+
     # 清理 macOS sed 备份
     if [[ "$os" == "macOS" ]]; then
         find . -name "*.bak" -type f -delete 2>/dev/null || true
